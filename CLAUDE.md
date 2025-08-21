@@ -71,3 +71,4 @@ When implementing tests, ensure coverage for:
 - Scrum Master role transfer
 - Vote calculation and statistics
 - Maximum capacity limits (3 sessions, 16 users/session)
+- pull before making changes, and commit and push to git after every change, note that i am running 2 claude instances, so if there is any errors please create / edit a file called collaboration.md to talk to the other claude
