@@ -6,19 +6,19 @@
 ## Priority 2 - Important Clarifications
 
 ### Deployment Environment
-1. What is the target deployment environment (AWS, Azure, on-premise)?
-2. Are there any corporate proxy or firewall considerations for WebSocket connections?
-3. What monitoring/logging infrastructure is available (e.g., ELK stack, Datadog)?
+1. ~~What is the target deployment environment (AWS, Azure, on-premise)?~~ **ANSWERED**: Standard cloud deployment (AWS/Azure/GCP) - see ASSUMPTIONS.md
+2. ~~Are there any corporate proxy or firewall considerations for WebSocket connections?~~ **RESOLVED**: Using Server-Sent Events instead, no proxy issues - see DECISIONS.md
+3. ~~What monitoring/logging infrastructure is available (e.g., ELK stack, Datadog)?~~ **ANSWERED**: Standard cloud provider tools - see ASSUMPTIONS.md
 
 ### Authentication & Security
-1. Should we add optional authentication in future phases?
-2. Are there any corporate security policies we need to comply with?
-3. Should session links be time-limited or single-use for security?
+1. Should we add optional authentication in future phases? **FUTURE**: Not required for Phase 1
+2. ~~Are there any corporate security policies we need to comply with?~~ **ANSWERED**: Standard web app security only - see ASSUMPTIONS.md
+3. ~~Should session links be time-limited or single-use for security?~~ **ANSWERED**: GUID-based with 10min timeout - see DECISIONS.md
 
 ### Branding & Design
-1. Are there corporate branding guidelines to follow?
-2. Do you have preference for the avatar icon set/style?
-3. Should the app have a specific color scheme or use Material Design defaults?
+1. ~~Are there corporate branding guidelines to follow?~~ **ANSWERED**: Not required for internal tool - see ASSUMPTIONS.md
+2. ~~Do you have preference for the avatar icon set/style?~~ **ANSWERED**: Generic avatar icons acceptable - see ASSUMPTIONS.md  
+3. ~~Should the app have a specific color scheme or use Material Design defaults?~~ **ANSWERED**: Standard Material Design colors - see ASSUMPTIONS.md
 
 ## Priority 3 - Nice to Have Clarifications
 

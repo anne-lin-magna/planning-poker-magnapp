@@ -1,16 +1,17 @@
-# MagnaPP React Implementation Plan
+# MagnaPP React Implementation Plan - Unified Architecture
 
 ## Executive Summary
 
-MagnaPP is a real-time Planning Poker application built with React 18+ using modern hooks, Context API for state management, and WebSocket for real-time communication. The application supports up to 16 concurrent users per session with a virtual boardroom interface featuring an oval table visualization.
+MagnaPP is a real-time Planning Poker application for distributed agile teams. This document combines two expert architectural approaches to create a comprehensive implementation plan.
 
-### Technology Stack
-- **React 18+** with concurrent features and modern hooks
-- **Context API + useReducer** for global state management
-- **Custom Hooks** for business logic encapsulation
-- **WebSocket** with exponential backoff reconnection
-- **CSS Modules** for component-scoped styling
-- **Jest + React Testing Library** for comprehensive testing
+### Technology Stack (Consensus)
+- **React 18+** with TypeScript and modern hooks
+- **Redux Toolkit** with RTK Query for state management (enhanced from Context API)
+- **Material-UI v5** for component library and theming
+- **Server-Sent Events (SSE)** for real-time updates (more reliable than WebSocket alone)
+- **Vite** for build tooling and development server
+- **Vitest + React Testing Library** for unit testing
+- **Playwright** for E2E testing
 
 ### Architecture Principles
 - Component composition over complex hierarchies
@@ -18,352 +19,592 @@ MagnaPP is a real-time Planning Poker application built with React 18+ using mod
 - Optimistic UI updates for responsive user experience
 - Error boundaries for graceful failure handling
 - Performance optimization using React.memo, useMemo, useCallback
+- Predictable state management with Redux DevTools support
 
-## Component Architecture
+## Combined Component Architecture
 
-### Component Hierarchy
+### High-Level Component Hierarchy
 ```
 App
-├── SessionProvider (Context)
-│   ├── UserProvider (Context) 
-│   │   ├── WebSocketProvider (Context)
-│   │   │   ├── SessionLobby
-│   │   │   │   ├── CreateSession
-│   │   │   │   ├── JoinSession
-│   │   │   │   └── SessionList
-│   │   │   └── PlanningRoom
-│   │   │       ├── SessionInfo
-│   │   │       ├── BoardView
-│   │   │       │   └── UserCard (×16)
-│   │   │       ├── VotingPanel
-│   │   │       ├── Statistics
-│   │   │       └── Controls (Scrum Master only)
-│   │   └── ErrorBoundary
-└── LoadingSpinner
+├── Router (React Router v6)
+├── Redux Provider (RTK Store)
+├── MUI ThemeProvider
+├── Global Components
+│   ├── ErrorBoundary
+│   ├── ConnectionStatus (SSE indicator)
+│   └── ToastNotifications
+└── Main Routes
+    ├── LandingPage (SessionLobby)
+    │   ├── UserSetupForm
+    │   ├── SessionCreator
+    │   ├── JoinSession
+    │   └── ActiveSessionsList
+    ├── SessionBoardroom (PlanningRoom)
+    │   ├── SessionInfo/BoardroomHeader
+    │   ├── OvalTable (BoardView)
+    │   │   ├── UserAvatar (×16 max)
+    │   │   └── VotingIndicators
+    │   ├── VotingPanel
+    │   │   ├── VotingCards
+    │   │   └── VoteStatistics
+    │   └── ScrumMasterControls
+    └── NotFoundPage
 ```
 
-### Core Component Responsibilities
+## State Management Strategy (Enhanced)
 
-**App.jsx**
-- Root component initializing all providers
-- Global error boundary implementation
-- Application-wide loading states
-
-**SessionLobby.jsx**
-- Session creation and discovery interface
-- User onboarding and session joining
-- Session list management and filtering
-
-**PlanningRoom.jsx**
-- Main planning poker interface
-- Real-time session state management
-- Coordination of voting workflow
-
-**BoardView.jsx**
-- Oval table visualization with user positioning
-- Visual representation of voting status
-- User interaction handling (click, hover)
-
-**VotingPanel.jsx**
-- Fibonacci voting cards interface (1,2,3,5,8,13,21,Coffee)
-- Vote selection and submission
-- Voting state feedback
-
-**Statistics.jsx**
-- Vote results calculation and display
-- Consensus indicators and team metrics
-- Average calculation excluding Coffee votes
-
-## State Management Strategy
-
-### Context Structure
-
-**SessionContext**
-```javascript
-{
-  currentSession: {
-    id: string,
-    name: string,
-    scrumMasterId: string,
-    participants: Array<User>,
-    currentVote: {
-      isActive: boolean,
-      topic: string,
-      votes: Map<userId, vote>,
-      isRevealed: boolean
-    },
-    settings: {
-      allowSpectators: boolean,
-      autoReveal: boolean
-    },
-    createdAt: timestamp,
-    lastActivity: timestamp
-  },
-  sessionList: Array<SessionSummary>,
-  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting',
-  error: string | null,
-  loading: boolean
+### Redux Toolkit Store Structure
+```typescript
+interface RootState {
+  // Core application state
+  user: UserState;
+  session: SessionState;
+  voting: VotingState;
+  connection: ConnectionState;
+  ui: UIState;
+  
+  // RTK Query API state
+  api: ApiState;
 }
 ```
 
-**UserContext**
-```javascript
+### Context + Redux Hybrid Approach
+- **Redux**: For global application state and server synchronization
+- **Context API**: For component-specific state (e.g., form state, UI preferences)
+- **Local State**: For ephemeral UI state (e.g., hover effects, animations)
+
+### Detailed Slice Definitions
+
+#### User Slice
+```typescript
+interface UserState {
+  id: string | null;
+  name: string;
+  avatar: string;
+  role: 'participant' | 'scrum_master' | 'spectator';
+  preferences: {
+    theme: 'light' | 'dark' | 'system';
+    soundEnabled: boolean;
+  };
+  isSetup: boolean;
+}
+```
+
+#### Session Slice
+```typescript
+interface SessionState {
+  current: {
+    id: string;
+    name: string;
+    participants: Participant[];
+    scrumMasterId: string;
+    status: 'waiting' | 'voting' | 'revealing' | 'results';
+    votingRounds: VotingRound[];
+    expiresAt: string;
+    settings: {
+      allowSpectators: boolean;
+      autoReveal: boolean;
+      showTimer: boolean;
+    };
+  } | null;
+  availableSessions: SessionSummary[];
+  loading: boolean;
+  error: string | null;
+}
+```
+
+#### Voting Slice
+```typescript
+interface VotingState {
+  currentRound: {
+    roundId: string;
+    topic: string;
+    votes: Map<string, string>; // userId -> vote
+    myVote: string | null;
+    isRevealed: boolean;
+    startedAt: number;
+    revealedAt: number | null;
+    statistics: VoteStatistics | null;
+  } | null;
+  roundHistory: VotingRound[];
+  isVoting: boolean;
+}
+```
+
+## Real-time Communication Strategy
+
+### Dual Approach: SSE + WebSocket Fallback
+```typescript
+class RealtimeService {
+  private eventSource: EventSource | null = null;
+  private websocket: WebSocket | null = null;
+  private connectionType: 'sse' | 'websocket' = 'sse';
+  
+  async connect(sessionId: string) {
+    try {
+      // Primary: Server-Sent Events
+      await this.connectSSE(sessionId);
+    } catch (error) {
+      // Fallback: WebSocket
+      await this.connectWebSocket(sessionId);
+    }
+  }
+  
+  private connectSSE(sessionId: string) {
+    this.eventSource = new EventSource(`/api/sse/${sessionId}`);
+    this.setupSSEHandlers();
+  }
+  
+  private connectWebSocket(sessionId: string) {
+    this.websocket = new WebSocket(`ws://localhost:8000/ws/${sessionId}`);
+    this.setupWebSocketHandlers();
+  }
+}
+```
+
+### Event Types and Handling
+```typescript
+enum EventType {
+  // Session events
+  SESSION_CREATED = 'session_created',
+  SESSION_UPDATED = 'session_updated',
+  SESSION_EXPIRED = 'session_expired',
+  
+  // User events  
+  USER_JOINED = 'user_joined',
+  USER_LEFT = 'user_left',
+  USER_RECONNECTED = 'user_reconnected',
+  
+  // Voting events
+  VOTING_STARTED = 'voting_started',
+  VOTE_CAST = 'vote_cast',
+  VOTES_REVEALED = 'votes_revealed',
+  ROUND_COMPLETED = 'round_completed',
+  
+  // Control events
+  SCRUM_MASTER_CHANGED = 'scrum_master_changed',
+  USER_KICKED = 'user_kicked'
+}
+```
+
+## File and Folder Organization (Complete)
+
+```
+frontend/
+├── public/
+│   ├── icons/                    # Avatar icons and app icons
+│   ├── sounds/                   # Notification sounds
+│   └── manifest.json             # PWA manifest
+├── src/
+│   ├── components/
+│   │   ├── common/               # Reusable components
+│   │   │   ├── Avatar.tsx
+│   │   │   ├── Button.tsx
+│   │   │   ├── LoadingSpinner.tsx
+│   │   │   ├── ErrorBoundary.tsx
+│   │   │   ├── ConnectionStatus.tsx
+│   │   │   └── Toast.tsx
+│   │   ├── boardroom/            # Boardroom-specific
+│   │   │   ├── OvalTable.tsx
+│   │   │   ├── UserAvatar.tsx
+│   │   │   ├── BoardroomHeader.tsx
+│   │   │   ├── SessionTimer.tsx
+│   │   │   └── ParticipantList.tsx
+│   │   ├── voting/               # Voting components
+│   │   │   ├── VotingPanel.tsx
+│   │   │   ├── VotingCards.tsx
+│   │   │   ├── VoteCard.tsx
+│   │   │   ├── VoteStatistics.tsx
+│   │   │   └── ConsensusIndicator.tsx
+│   │   ├── forms/                # Form components
+│   │   │   ├── UserSetupForm.tsx
+│   │   │   ├── SessionCreator.tsx
+│   │   │   ├── JoinSessionForm.tsx
+│   │   │   └── validation.ts
+│   │   └── controls/             # Control components
+│   │       ├── ScrumMasterControls.tsx
+│   │       ├── UserManagement.tsx
+│   │       └── SessionControls.tsx
+│   ├── pages/
+│   │   ├── LandingPage.tsx
+│   │   ├── SessionBoardroom.tsx
+│   │   ├── ErrorPage.tsx
+│   │   └── NotFoundPage.tsx
+│   ├── hooks/                    # Custom React hooks
+│   │   ├── useRealtime.ts       # SSE/WebSocket management
+│   │   ├── useSession.ts        # Session-specific logic
+│   │   ├── useVoting.ts         # Voting logic
+│   │   ├── useSessionTimer.ts   # Timer functionality
+│   │   ├── useLocalStorage.ts   # Persistent storage
+│   │   ├── useAudio.ts          # Sound notifications
+│   │   └── useOptimisticUpdate.ts # Optimistic UI
+│   ├── store/
+│   │   ├── index.ts              # Store configuration
+│   │   ├── middleware/
+│   │   │   ├── realtimeMiddleware.ts
+│   │   │   └── loggingMiddleware.ts
+│   │   ├── slices/
+│   │   │   ├── userSlice.ts
+│   │   │   ├── sessionSlice.ts
+│   │   │   ├── votingSlice.ts
+│   │   │   ├── connectionSlice.ts
+│   │   │   └── uiSlice.ts
+│   │   └── api/
+│   │       ├── baseApi.ts       # RTK Query setup
+│   │       └── endpoints/
+│   │           ├── session.ts
+│   │           ├── voting.ts
+│   │           └── user.ts
+│   ├── services/
+│   │   ├── realtimeService.ts   # SSE/WebSocket service
+│   │   ├── audioService.ts      # Sound effects
+│   │   ├── storageService.ts    # LocalStorage wrapper
+│   │   ├── sessionManager.ts    # Session business logic
+│   │   └── voteCalculator.ts    # Vote statistics
+│   ├── utils/
+│   │   ├── constants.ts         # App constants
+│   │   ├── helpers.ts           # Utility functions
+│   │   ├── types.ts             # TypeScript types
+│   │   ├── formatters.ts        # Data formatting
+│   │   └── validators.ts        # Input validation
+│   ├── styles/
+│   │   ├── theme.ts             # MUI theme config
+│   │   ├── globals.css          # Global styles
+│   │   ├── animations.css       # Animation definitions
+│   │   └── modules/             # CSS modules
+│   ├── router/
+│   │   ├── AppRouter.tsx        # Route definitions
+│   │   └── ProtectedRoute.tsx   # Auth guards
+│   ├── App.tsx
+│   └── main.tsx
+├── tests/
+│   ├── __mocks__/               # Mock implementations
+│   ├── components/              # Component tests
+│   ├── hooks/                   # Hook tests
+│   ├── store/                   # Redux tests
+│   ├── services/                # Service tests
+│   ├── integration/             # Integration tests
+│   └── e2e/                     # Playwright E2E tests
+├── .env.example
+├── .eslintrc.json
+├── .prettierrc
+├── vite.config.ts
+├── tsconfig.json
+├── package.json
+└── README.md
+```
+
+## Key Functions and Their Implementations
+
+### Core Business Logic Functions
+
+#### 1. Session Management
+```typescript
+// handleCreateSession - Creates new planning poker session
+async function handleCreateSession(sessionName: string, userName: string): Promise<Session>
+
+// handleJoinSession - Joins existing session with validation
+async function handleJoinSession(sessionId: string, userName: string): Promise<void>
+
+// handleLeaveSession - Gracefully exits session with cleanup
+async function handleLeaveSession(): Promise<void>
+
+// handleSessionExpiry - Manages 10-minute inactivity timeout
+function handleSessionExpiry(): void
+```
+
+#### 2. Voting Workflow
+```typescript
+// handleVoteCast - Submits vote with optimistic update
+function handleVoteCast(value: string): void
+
+// handleVoteReveal - Scrum Master reveals all votes
+async function handleVoteReveal(): Promise<void>
+
+// handleNewRound - Initiates new voting round
+async function handleNewRound(topic: string): Promise<void>
+
+// calculateVoteStatistics - Computes average, distribution, consensus
+function calculateVoteStatistics(votes: Map<string, string>): VoteStatistics
+```
+
+#### 3. Real-time Synchronization
+```typescript
+// establishRealtimeConnection - Sets up SSE/WebSocket connection
+async function establishRealtimeConnection(sessionId: string): Promise<void>
+
+// handleRealtimeEvent - Processes incoming real-time events
+function handleRealtimeEvent(event: RealtimeEvent): void
+
+// handleReconnection - Manages exponential backoff reconnection
+async function handleReconnection(): Promise<void>
+
+// syncSessionState - Ensures state consistency after reconnection
+async function syncSessionState(): Promise<void>
+```
+
+#### 4. User Interface Functions
+```typescript
+// calculateUserPositions - Positions users around oval table
+function calculateUserPositions(users: User[]): Position[]
+
+// renderVotingCard - Displays Fibonacci voting cards
+function renderVotingCard(value: string, isSelected: boolean): ReactElement
+
+// animateVoteReveal - Animates card flip on reveal
+function animateVoteReveal(): void
+
+// updateVotingIndicator - Shows green/red voting status
+function updateVotingIndicator(userId: string, hasVoted: boolean): void
+```
+
+#### 5. Scrum Master Controls
+```typescript
+// transferScrumMaster - Transfers role to another participant
+async function transferScrumMaster(newMasterId: string): Promise<void>
+
+// kickParticipant - Removes user from session
+async function kickParticipant(userId: string): Promise<void>
+
+// pauseSession - Handles 5-minute grace period
+function pauseSession(): void
+
+// endSession - Terminates session for all users
+async function endSession(): Promise<void>
+```
+
+## Custom Hooks Implementation
+
+### Essential Custom Hooks
+
+```typescript
+// useRealtime - Manages SSE/WebSocket connection lifecycle
+const useRealtime = (sessionId: string) => {
+  // Establishes connection on mount
+  // Handles reconnection with exponential backoff
+  // Cleans up on unmount
+  return { status, reconnect, lastEvent };
+};
+
+// useSession - Encapsulates session management logic
+const useSession = () => {
+  // Provides session CRUD operations
+  // Manages participant list updates
+  // Handles session expiry
+  return { session, joinSession, leaveSession, isLoading };
+};
+
+// useVoting - Manages voting workflow
+const useVoting = () => {
+  // Handles vote submission with optimistic updates
+  // Manages vote reveal and statistics
+  // Tracks voting round history
+  return { currentRound, submitVote, canVote, statistics };
+};
+
+// useOptimisticUpdate - Provides optimistic UI updates
+const useOptimisticUpdate = (action: AsyncAction) => {
+  // Applies immediate UI update
+  // Handles rollback on failure
+  // Manages loading states
+  return { execute, isLoading, error };
+};
+
+// useSessionTimer - Countdown timer for session expiry
+const useSessionTimer = (expiresAt: string) => {
+  // Calculates remaining time
+  // Updates every second
+  // Triggers expiry callback
+  return { remainingTime, isExpired, formattedTime };
+};
+```
+
+## Testing Strategy (Comprehensive)
+
+### Test Coverage Requirements
+
+#### Unit Tests (30+ test cases)
+```typescript
+// Component Tests
+- "renders voting cards with correct Fibonacci sequence"
+- "disables cards after vote submission"
+- "displays user avatars in correct positions"
+- "shows voting indicators accurately"
+- "handles theme switching properly"
+
+// Hook Tests
+- "establishes SSE connection on mount"
+- "reconnects with exponential backoff on failure"
+- "calculates session expiry correctly"
+- "manages optimistic updates and rollbacks"
+
+// Service Tests  
+- "calculates vote statistics excluding coffee"
+- "determines consensus when 80% agreement"
+- "formats user positions for 1-16 participants"
+- "validates session join with full capacity"
+
+// Redux Tests
+- "updates state on real-time events"
+- "handles vote submission optimistically"
+- "reverts state on API failure"
+- "maintains state during reconnection"
+```
+
+#### Integration Tests
+```typescript
+// End-to-end workflows
+- "completes full voting cycle from start to reveal"
+- "synchronizes state across multiple browser tabs"
+- "handles scrum master disconnection with grace period"
+- "enforces 16 user per session limit"
+- "maintains session during network interruption"
+```
+
+#### E2E Tests (Playwright)
+```typescript
+// Critical user journeys
+test.describe('Planning Poker Session', () => {
+  test('creates session and invites participants', async ({ page }) => {});
+  test('casts vote and reveals results', async ({ page }) => {});
+  test('handles multiple concurrent sessions', async ({ browser }) => {});
+  test('reconnects after network failure', async ({ page }) => {});
+  test('transfers scrum master role', async ({ page }) => {});
+});
+```
+
+## Performance Optimization Strategy
+
+### React Performance Optimizations
+```typescript
+// 1. Memoization for expensive computations
+const memoizedPositions = useMemo(
+  () => calculateUserPositions(participants),
+  [participants]
+);
+
+// 2. Component memoization for frequent re-renders
+const UserAvatar = React.memo(({ user, isVoting }) => {
+  // Component implementation
+}, (prev, next) => {
+  return prev.user.id === next.user.id && 
+         prev.isVoting === next.isVoting;
+});
+
+// 3. Callback memoization for event handlers
+const handleVote = useCallback((value: string) => {
+  dispatch(submitVote(value));
+}, [dispatch]);
+
+// 4. Lazy loading for non-critical components
+const Statistics = lazy(() => import('./Statistics'));
+
+// 5. Virtual scrolling for large lists
+const VirtualParticipantList = ({ participants }) => {
+  // Virtual scrolling implementation for 16+ users
+};
+```
+
+### Network Optimization
+- Request debouncing for rapid state changes
+- Batch API calls where possible
+- Implement request caching with RTK Query
+- Use compression for SSE payloads
+
+## Development Workflow
+
+### Scripts Configuration
+```json
 {
-  currentUser: {
-    id: string,
-    name: string,
-    role: 'scrumMaster' | 'participant',
-    avatar: string,
-    preferences: {
-      theme: 'light' | 'dark',
-      soundEnabled: boolean,
-      autoJoin: boolean
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:e2e": "playwright test",
+    "lint": "eslint src --ext ts,tsx",
+    "format": "prettier --write src/**/*.{ts,tsx}",
+    "type-check": "tsc --noEmit"
+  }
+}
+```
+
+### Vite Configuration
+```typescript
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8000',
+      '/sse': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      }
     }
   },
-  isAuthenticated: boolean
-}
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', '@mui/material'],
+          redux: ['@reduxjs/toolkit', 'react-redux']
+        }
+      }
+    }
+  }
+});
 ```
 
-**WebSocketContext**
-```javascript
-{
-  connection: WebSocket | null,
-  connectionState: 'idle' | 'connecting' | 'connected' | 'disconnecting' | 'error',
-  retryCount: number,
-  lastPingTime: timestamp,
-  messageQueue: Array<Message>
-}
-```
+## Implementation Phases (5 Weeks)
 
-### Action Types
-- **Session Actions**: CREATE, JOIN, LEAVE, UPDATE, EXPIRE
-- **Voting Actions**: START, CAST, REVEAL, RESET
-- **User Actions**: JOIN, LEAVE, KICK, ROLE_TRANSFER
-- **Connection Actions**: CONNECT, DISCONNECT, RECONNECT, ERROR
+### Week 1: Foundation
+- Project setup with Vite, React, TypeScript
+- Redux store configuration
+- Basic routing and layouts
+- User setup and preferences
 
-## File Structure
+### Week 2: Session Management  
+- Session creation and joining
+- Participant management
+- Basic boardroom interface
+- Oval table visualization
 
-```
-src/
-├── components/
-│   ├── App/
-│   │   ├── App.jsx
-│   │   ├── App.module.css
-│   │   └── App.test.js
-│   ├── SessionLobby/
-│   │   ├── SessionLobby.jsx
-│   │   ├── SessionLobby.module.css
-│   │   ├── components/
-│   │   │   ├── CreateSession.jsx
-│   │   │   ├── JoinSession.jsx
-│   │   │   └── SessionList.jsx
-│   │   └── SessionLobby.test.js
-│   ├── PlanningRoom/
-│   │   ├── PlanningRoom.jsx
-│   │   ├── PlanningRoom.module.css
-│   │   ├── components/
-│   │   │   ├── BoardView.jsx
-│   │   │   ├── UserCard.jsx
-│   │   │   ├── VotingPanel.jsx
-│   │   │   ├── Statistics.jsx
-│   │   │   ├── Controls.jsx
-│   │   │   └── SessionInfo.jsx
-│   │   └── PlanningRoom.test.js
-│   ├── shared/
-│   │   ├── LoadingSpinner.jsx
-│   │   ├── ErrorBoundary.jsx
-│   │   ├── Modal.jsx
-│   │   └── Button.jsx
-│   └── layout/
-│       ├── Header.jsx
-│       └── Footer.jsx
-├── contexts/
-│   ├── SessionContext.js
-│   ├── UserContext.js
-│   └── WebSocketContext.js
-├── hooks/
-│   ├── useWebSocket.js
-│   ├── useSession.js
-│   ├── useVoting.js
-│   ├── useUserPreferences.js
-│   ├── useTimer.js
-│   └── useReconnection.js
-├── utils/
-│   ├── sessionUtils.js
-│   ├── votingUtils.js
-│   ├── websocketUtils.js
-│   ├── localStorage.js
-│   └── constants.js
-├── types/
-│   └── index.js
-└── styles/
-    ├── globals.css
-    ├── variables.css
-    └── mixins.css
-```
+### Week 3: Real-time Communication
+- SSE implementation with fallback
+- Real-time event handling
+- Connection status management
+- State synchronization
 
-## Implementation Phases
+### Week 4: Voting System
+- Voting cards interface
+- Vote submission and reveal
+- Statistics calculation
+- Scrum Master controls
 
-### Phase 1: Core Foundation (Week 1)
-1. Setup React application with TypeScript
-2. Implement basic component structure
-3. Create Context providers and reducers
-4. Build SessionLobby with create/join functionality
-
-### Phase 2: Planning Room Interface (Week 2)
-1. Implement BoardView with oval table visualization
-2. Create VotingPanel with Fibonacci cards
-3. Build Statistics component for results
-4. Add Controls for Scrum Master actions
-
-### Phase 3: Real-time Communication (Week 3)
-1. Implement WebSocket integration with custom hooks
-2. Add real-time session synchronization
-3. Build reconnection logic with exponential backoff
-4. Implement message queuing during disconnections
-
-### Phase 4: Advanced Features (Week 4)
-1. Add user preferences with localStorage
-2. Implement session timeout and cleanup
-3. Add error handling and recovery
-4. Performance optimization with memoization
-
-### Phase 5: Testing & Polish (Week 5)
-1. Comprehensive unit and integration tests
-2. Responsive design for mobile/tablet
-3. Accessibility improvements
-4. Performance profiling and optimization
-
-## Key Technical Decisions
-
-### Context vs Redux
-**Decision**: Use Context API + useReducer
-**Rationale**: Simpler setup, adequate for app complexity, built-in React solution, better TypeScript integration
-
-### WebSocket Management
-**Decision**: Custom hooks with exponential backoff
-**Rationale**: Full control over connection lifecycle, optimized for planning poker use case, easier testing
-
-### Styling Approach
-**Decision**: CSS Modules
-**Rationale**: Component-scoped styles, no runtime overhead, good TypeScript support, simple migration path
-
-### State Updates
-**Decision**: Optimistic UI updates
-**Rationale**: Better user experience, immediate feedback, graceful degradation during network issues
+### Week 5: Testing and Polish
+- Comprehensive test suite
+- Performance optimization
+- Responsive design
+- Accessibility features
 
 ## Risk Mitigation
 
-### Connection Reliability
-- **Risk**: WebSocket disconnections during voting
-- **Mitigation**: Message queuing, automatic reconnection, optimistic updates, state synchronization
+### Technical Risks and Solutions
+1. **SSE Browser Compatibility**: Implement WebSocket fallback
+2. **State Desynchronization**: Add periodic state reconciliation
+3. **Performance with 16 Users**: Use virtualization and memoization
+4. **Network Instability**: Exponential backoff with message queuing
+5. **Mobile Touch Issues**: Dedicated mobile gesture handling
 
-### Scalability Constraints
-- **Risk**: 16 users per session causing performance issues
-- **Mitigation**: React.memo for UserCard components, debounced updates, efficient re-rendering strategies
+## Conclusion
 
-### Session Management
-- **Risk**: Session state inconsistency
-- **Mitigation**: Server as source of truth, conflict resolution, timestamp-based updates
+This unified plan combines the best practices from both architectural approaches:
+- Redux Toolkit for robust state management (from second plan)
+- SSE with WebSocket fallback for reliability (from second plan)
+- Context API for component-specific state (from first plan)
+- Comprehensive testing strategy (merged from both)
+- Clear function specifications (from first plan)
+- Detailed file organization (from second plan)
 
-### Mobile Responsiveness
-- **Risk**: Complex oval table layout on small screens
-- **Mitigation**: Responsive grid fallback, touch-optimized interactions, progressive enhancement
-
-## Testing Approach
-
-### Unit Tests (Jest + React Testing Library)
-- Component rendering and user interactions
-- Custom hook behavior and state transitions
-- Utility function correctness
-- Context provider functionality
-
-### Integration Tests
-- Full session workflow (create → join → vote → reveal)
-- Real-time synchronization between multiple clients
-- Error handling and recovery scenarios
-- User role management and permissions
-
-### E2E Tests (Cypress)
-- Critical user journeys
-- Cross-browser compatibility
-- Performance under load
-- WebSocket connection handling
-
-### Test Coverage Goals
-- **Components**: 90%+ coverage for user interactions
-- **Hooks**: 95%+ coverage for business logic
-- **Utilities**: 100% coverage for pure functions
-- **Integration**: All critical workflows covered
-
-## Performance Considerations
-
-### React Optimization
-- `React.memo()` for UserCard components (prevent unnecessary re-renders)
-- `useMemo()` for expensive calculations (statistics, user positioning)
-- `useCallback()` for event handlers passed to child components
-- Lazy loading for non-critical components
-
-### WebSocket Optimization
-- Message batching for multiple rapid updates
-- Heartbeat mechanism for connection health
-- Graceful degradation during poor network conditions
-- Connection pooling for multiple tabs
-
-### Memory Management
-- Proper cleanup of timers and listeners in useEffect
-- Message queue size limits to prevent memory leaks
-- Session cleanup after inactivity timeout
-- Garbage collection of disconnected users
-
-## Accessibility Requirements
-
-### WCAG 2.1 AA Compliance
-- Keyboard navigation for all interactive elements
-- Screen reader support with proper ARIA labels
-- High contrast mode support
-- Focus management for modal dialogs
-
-### Specific Considerations
-- Voting cards accessible via keyboard (Space/Enter)
-- Live announcements for real-time updates
-- Alternative text for user avatars
-- Color-blind friendly voting status indicators
-
-### Testing Strategy
-- Automated accessibility testing with axe-core
-- Manual testing with screen readers
-- Keyboard-only navigation testing
-- Color contrast validation
-
-## Deployment & Build Strategy
-
-### Build Configuration
-- Webpack 5 with module federation support
-- Code splitting for optimal bundle sizes
-- Environment-specific configurations
-- Source maps for production debugging
-
-### Production Optimizations
-- Tree shaking for unused code elimination
-- Asset compression and caching strategies
-- CDN integration for static assets
-- Progressive Web App features
-
-### Monitoring & Analytics
-- Error tracking with Sentry integration
-- Performance monitoring with Web Vitals
-- WebSocket connection quality metrics
-- User engagement analytics
-
----
-
-## Next Steps
-
-1. **Environment Setup**: Initialize React application with TypeScript and testing framework
-2. **Context Implementation**: Create provider components with useReducer hooks
-3. **Core Components**: Build SessionLobby and PlanningRoom layouts
-4. **WebSocket Integration**: Implement real-time communication layer
-5. **Testing**: Establish comprehensive test suite from day one
-
-This plan provides a complete roadmap for implementing MagnaPP as a modern, scalable React application optimized for real-time collaborative planning poker sessions.
+The implementation focuses on MVP functionality while maintaining scalability and code quality for future enhancements.

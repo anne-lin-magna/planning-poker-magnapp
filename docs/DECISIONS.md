@@ -7,26 +7,27 @@
 **Rationale**: 
 - Component-based architecture ideal for real-time UI updates
 - Strong TypeScript support for type safety
-- Large ecosystem with excellent WebSocket/Socket.io integration
+- Large ecosystem with excellent EventSource/SSE integration
 - Proven performance for real-time collaborative applications
 
 ### Backend Framework
 **Decision**: Python FastAPI
 **Rationale**:
 - Modern async Python framework with excellent performance
-- Native WebSocket support with async/await patterns
+- Native Server-Sent Events support with async/await patterns
 - Built-in data validation with Pydantic
 - Automatic API documentation generation
-- Clean architecture for REST + WebSocket hybrid approach
+- Clean architecture for REST + SSE hybrid approach
 
 ### Real-time Communication
-**Decision**: Socket.io (python-socketio for backend, socket.io-client for frontend)
+**Decision**: Server-Sent Events (SSE) with EventSource API
 **Rationale**:
+- Simple HTTP-based streaming, no complex connection management
 - Automatic reconnection with exponential backoff (PRD requirement)
-- Room-based communication perfect for session management
-- Fallback transport mechanisms ensure reliability
-- Built-in heartbeat for connection monitoring
-- Event-based architecture matches our voting round workflow
+- Works through corporate firewalls and proxies without configuration
+- Event-based architecture perfect for voting status updates
+- Actions sent via standard HTTP POST requests to REST API
+- No bidirectional complexity - server pushes updates, client sends actions
 
 ### State Management
 **Decision**: Redux Toolkit
@@ -51,8 +52,8 @@
 **Rationale**:
 - Vitest: Fast unit testing with native TypeScript support
 - Playwright: Cross-browser E2E testing (Chrome, Edge, Firefox, Safari as per PRD)
-- Both tools have excellent async/WebSocket testing capabilities
-- Playwright can test real-time multi-user scenarios
+- Both tools have excellent async/SSE testing capabilities
+- Playwright can test real-time multi-user scenarios with EventSource
 
 ### Additional Technical Decisions
 
@@ -74,9 +75,15 @@
 #### Deployment Considerations
 - **Frontend**: Static build served via nginx or CDN
 - **Backend**: ASGI server (Uvicorn) behind reverse proxy
-- **WebSocket**: Ensure proxy supports WebSocket upgrade
+- **SSE**: Standard HTTP streaming, no special proxy configuration needed
 
 #### Session Storage
 - **Implementation**: Python dict with TTL management
 - **Cleanup**: Background task for expired session removal
 - **Capacity**: Track active sessions to enforce 3-session limit
+
+#### Security Decisions
+- **Authentication**: None required - open sessions for Phase 1
+- **Session Links**: GUID-based, not time-limited (10min timeout handles security)
+- **Data Protection**: HTTPS transport encryption only, no additional encryption needed
+- **Access Control**: Link-sharing model sufficient for internal corporate use

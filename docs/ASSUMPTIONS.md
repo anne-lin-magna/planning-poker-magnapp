@@ -3,16 +3,22 @@
 ## Technical Assumptions
 
 ### Infrastructure
-- Application will be deployed to a corporate web server with WebSocket support
+- Application will be deployed to a corporate web server with Server-Sent Events support
 - Server has sufficient memory to handle 48 concurrent users
-- Network infrastructure supports WebSocket connections (no restrictive proxies)
+- Network infrastructure supports Server-Sent Events (standard HTTP streaming)
 - HTTPS will be available for production deployment
+
+### Deployment Environment
+- Standard cloud deployment environment (AWS/Azure/GCP) with standard networking
+- Server-Sent Events work with all standard HTTP proxies and firewalls
+- Basic monitoring/logging available through standard cloud provider tools
+- No special compliance requirements beyond standard web application security
 
 ### Browser Support
 - Users have modern browsers (released within last 2 years)
 - JavaScript is enabled in user browsers
 - Cookies/LocalStorage are not blocked by browser policies
-- WebSocket connections are not blocked by corporate firewalls
+- Server-Sent Events are not blocked by corporate firewalls (standard HTTP)
 
 ### Performance
 - Network latency between users and server is typically <100ms
@@ -72,6 +78,12 @@
 - Avatar icons are sufficient for user identification
 - Material Design patterns are acceptable to stakeholders
 - Mobile experience is secondary to desktop experience
+
+### Branding & Design
+- Material Design components acceptable for corporate environment
+- Generic avatar icons sufficient for user identification
+- Standard blue/gray color scheme appropriate for business use
+- Corporate branding not required for internal tool
 
 ### Accessibility
 - Basic keyboard navigation is sufficient for Phase 1
