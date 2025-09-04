@@ -8,6 +8,10 @@
             "type": "command",
             "command": "node \"C:\\Users\\ALN\\AppData\\Roaming\\npm\\node_modules\\rins_hooks\\hooks\\auto-commit\\index.js\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "powershell -c \"[console]::beep(600,200)\""
           }
         ]
       }
