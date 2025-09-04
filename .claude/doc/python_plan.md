@@ -2305,6 +2305,294 @@ async def health_check():
 - **CORS Configuration**: Properly configured for frontend domain
 - **Rate Limiting**: Consider implementing basic rate limiting for production
 
+### Monitoring Service (`src/services/monitoring_service.py`)
+
+```python
+import asyncio
+import psutil
+import time
+from typing import Dict, List, Any, Optional
+from datetime import datetime, timedelta
+from collections import defaultdict, deque
+import json
+import logging
+
+class MonitoringService:
+    """Comprehensive monitoring and observability service"""
+    
+    def __init__(self):
+        self._metrics_enabled = True
+        self._counters = defaultdict(int)
+        self._gauges = defaultdict(float)
+        self._histograms = defaultdict(lambda: deque(maxlen=1000))  # Keep last 1000 measurements
+        self._health_checks = {}
+        self._alerts = deque(maxlen=100)
+        self._lock = asyncio.Lock()
+        self._start_time = datetime.utcnow()
+        
+        # Setup logging
+        self.logger = logging.getLogger("magnapp.monitoring")
+    
+    async def record_counter(self, name: str, value: int = 1, tags: Optional[Dict[str, str]] = None):
+        """Record counter metric"""
+        if not self._metrics_enabled:
+            return
+        
+        async with self._lock:
+            metric_key = self._build_metric_key(name, tags)
+            self._counters[metric_key] += value
+    
+    async def record_gauge(self, name: str, value: float, tags: Optional[Dict[str, str]] = None):
+        """Record gauge metric"""
+        if not self._metrics_enabled:
+            return
+        
+        async with self._lock:
+            metric_key = self._build_metric_key(name, tags)
+            self._gauges[metric_key] = value
+    
+    async def record_histogram(self, name: str, value: float, tags: Optional[Dict[str, str]] = None):
+        """Record histogram metric"""
+        if not self._metrics_enabled:
+            return
+        
+        async with self._lock:
+            metric_key = self._build_metric_key(name, tags)
+            self._histograms[metric_key].append({
+                'value': value,
+                'timestamp': time.time()
+            })
+    
+    async def record_metric(self, event_type: str, data: Dict[str, Any]):
+        """Record application-specific metrics"""
+        timestamp = datetime.utcnow()
+        
+        # Common application metrics
+        if event_type == 'session_created':
+            await self.record_counter('sessions_created_total')
+            await self.record_gauge('sessions_active', data.get('total_active_sessions', 0))
+            
+        elif event_type == 'session_ended':
+            await self.record_counter('sessions_ended_total')
+            await self.record_histogram('session_duration_minutes', data.get('duration_minutes', 0))
+            
+        elif event_type == 'user_joined':
+            await self.record_counter('users_joined_total')
+            await self.record_gauge('users_active', data.get('total_active_users', 0))
+            
+        elif event_type == 'voting_round_completed':
+            await self.record_counter('voting_rounds_total')
+            await self.record_histogram('voting_duration_seconds', data.get('duration_seconds', 0))
+            await self.record_histogram('votes_per_round', data.get('vote_count', 0))
+            
+        elif event_type == 'sse_connection':
+            await self.record_counter('sse_connections_total')
+            await self.record_gauge('sse_connections_active', data.get('active_connections', 0))
+            
+        elif event_type == 'api_request':
+            await self.record_counter('api_requests_total', tags={
+                'method': data.get('method', 'unknown'),
+                'endpoint': data.get('endpoint', 'unknown'),
+                'status': str(data.get('status_code', 0))
+            })
+            await self.record_histogram('api_request_duration_seconds', 
+                                      data.get('duration_seconds', 0))
+            
+        elif event_type == 'mobile_optimization':
+            await self.record_counter('mobile_optimizations_total', tags={
+                'optimization_type': data.get('optimization_type', 'unknown')
+            })
+            
+        elif event_type == 'error_occurred':
+            await self.record_counter('errors_total', tags={
+                'error_type': data.get('error_type', 'unknown'),
+                'severity': data.get('severity', 'unknown')
+            })
+            
+            # Create alert for errors
+            await self._create_alert("ERROR", f"Error occurred: {data.get('message', 'Unknown error')}")
+        
+        self.logger.debug(f"Recorded metric: {event_type}", extra={'data': data})
+    
+    async def get_health_status(self) -> Dict[str, Any]:
+        """Get comprehensive health status"""
+        system_info = await self._get_system_info()
+        application_info = await self._get_application_info()
+        
+        # Run health checks
+        health_checks = await self.perform_health_checks()
+        
+        overall_healthy = all(health_checks.values())
+        
+        return {
+            'status': 'healthy' if overall_healthy else 'unhealthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'uptime_seconds': (datetime.utcnow() - self._start_time).total_seconds(),
+            'system': system_info,
+            'application': application_info,
+            'health_checks': health_checks,
+            'recent_alerts': list(self._alerts)[-10:]  # Last 10 alerts
+        }
+    
+    async def perform_health_checks(self) -> Dict[str, bool]:
+        """Perform all registered health checks"""
+        results = {}
+        
+        # System health checks
+        results['memory_usage'] = await self._check_memory_usage()
+        results['cpu_usage'] = await self._check_cpu_usage()
+        results['disk_space'] = await self._check_disk_space()
+        
+        # Application health checks
+        results['metrics_collection'] = self._metrics_enabled
+        results['error_rate'] = await self._check_error_rate()
+        results['response_time'] = await self._check_response_time()
+        
+        return results
+    
+    async def _get_system_info(self) -> Dict[str, Any]:
+        """Get system resource information"""
+        memory = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent(interval=1)
+        disk = psutil.disk_usage('/')
+        
+        return {
+            'memory': {
+                'total_mb': memory.total // 1024 // 1024,
+                'available_mb': memory.available // 1024 // 1024,
+                'used_percent': memory.percent
+            },
+            'cpu': {
+                'usage_percent': cpu_percent,
+                'count': psutil.cpu_count()
+            },
+            'disk': {
+                'total_gb': disk.total // 1024 // 1024 // 1024,
+                'free_gb': disk.free // 1024 // 1024 // 1024,
+                'used_percent': (disk.used / disk.total) * 100
+            }
+        }
+    
+    async def _get_application_info(self) -> Dict[str, Any]:
+        """Get application-specific information"""
+        async with self._lock:
+            return {
+                'metrics_enabled': self._metrics_enabled,
+                'total_counters': len(self._counters),
+                'total_gauges': len(self._gauges),
+                'total_histograms': len(self._histograms),
+                'total_alerts': len(self._alerts)
+            }
+    
+    async def _check_memory_usage(self) -> bool:
+        """Check if memory usage is within acceptable limits"""
+        memory = psutil.virtual_memory()
+        return memory.percent < 90  # Alert if memory usage > 90%
+    
+    async def _check_cpu_usage(self) -> bool:
+        """Check if CPU usage is within acceptable limits"""
+        cpu_percent = psutil.cpu_percent(interval=1)
+        return cpu_percent < 80  # Alert if CPU usage > 80%
+    
+    async def _check_disk_space(self) -> bool:
+        """Check if disk space is adequate"""
+        disk = psutil.disk_usage('/')
+        used_percent = (disk.used / disk.total) * 100
+        return used_percent < 90  # Alert if disk usage > 90%
+    
+    async def _check_error_rate(self) -> bool:
+        """Check if error rate is within acceptable limits"""
+        async with self._lock:
+            total_requests = sum(self._counters[k] for k in self._counters if 'api_requests_total' in k)
+            total_errors = sum(self._counters[k] for k in self._counters if 'errors_total' in k)
+            
+            if total_requests == 0:
+                return True  # No requests, no errors
+            
+            error_rate = (total_errors / total_requests) * 100
+            return error_rate < 5  # Alert if error rate > 5%
+    
+    async def _check_response_time(self) -> bool:
+        """Check if response times are acceptable"""
+        async with self._lock:
+            duration_metrics = [v for k, v in self._histograms.items() 
+                              if 'api_request_duration' in k]
+            
+            if not duration_metrics:
+                return True  # No duration data available
+            
+            # Get recent measurements (last 100)
+            recent_durations = []
+            for metric_deque in duration_metrics:
+                recent_durations.extend([m['value'] for m in list(metric_deque)[-100:]])
+            
+            if not recent_durations:
+                return True
+            
+            avg_duration = sum(recent_durations) / len(recent_durations)
+            return avg_duration < 1.0  # Alert if average response time > 1 second
+    
+    async def _create_alert(self, level: str, message: str, tags: Optional[Dict] = None):
+        """Create monitoring alert"""
+        alert = {
+            'level': level,
+            'message': message,
+            'timestamp': datetime.utcnow().isoformat(),
+            'tags': tags or {}
+        }
+        
+        async with self._lock:
+            self._alerts.append(alert)
+        
+        self.logger.warning(f"Alert created: {level} - {message}", extra={'tags': tags})
+    
+    def _build_metric_key(self, name: str, tags: Optional[Dict[str, str]] = None) -> str:
+        """Build metric key with tags"""
+        if not tags:
+            return name
+        
+        tag_str = ','.join(f"{k}={v}" for k, v in sorted(tags.items()))
+        return f"{name}[{tag_str}]"
+    
+    async def get_metrics_summary(self) -> Dict[str, Any]:
+        """Get summary of all collected metrics"""
+        async with self._lock:
+            # Calculate histogram statistics
+            histogram_stats = {}
+            for name, values in self._histograms.items():
+                if values:
+                    value_list = [v['value'] for v in values]
+                    histogram_stats[name] = {
+                        'count': len(value_list),
+                        'avg': sum(value_list) / len(value_list),
+                        'min': min(value_list),
+                        'max': max(value_list),
+                        'recent': value_list[-10:]  # Last 10 values
+                    }
+            
+            return {
+                'counters': dict(self._counters),
+                'gauges': dict(self._gauges),
+                'histograms': histogram_stats,
+                'collection_time': datetime.utcnow().isoformat()
+            }
+    
+    async def reset_metrics(self):
+        """Reset all metrics (use with caution)"""
+        async with self._lock:
+            self._counters.clear()
+            self._gauges.clear()
+            self._histograms.clear()
+            self._alerts.clear()
+        
+        self.logger.info("All metrics have been reset")
+    
+    def enable_metrics(self, enabled: bool = True):
+        """Enable or disable metrics collection"""
+        self._metrics_enabled = enabled
+        self.logger.info(f"Metrics collection {'enabled' if enabled else 'disabled'}")
+```
+
 ## Additional API Implementations
 
 ### Health and Monitoring Endpoints (`src/api/health.py`)
