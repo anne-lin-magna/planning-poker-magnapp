@@ -331,16 +331,31 @@ production_stack:
 
 ### 3. Testing Strategy Integration
 ```bash
-# Unit Tests
-npm run test              # Vitest (frontend components/hooks)
-pytest tests/             # Python (backend logic/API)
+# Frontend Unit Tests
+cd frontend/
+npm run test              # Vitest (components, hooks, Redux slices)
+npm run test:coverage     # Coverage reporting
 
-# Integration Tests  
-npm run test:integration  # Frontend + mocked SSE
-pytest tests/integration/ # Backend + real sessions
+# Backend Unit Tests
+cd backend/
+pytest tests/             # Pytest (models, services, API endpoints)
+pytest tests/ --cov=src   # Coverage with pytest-cov
 
-# E2E Tests
-npm run test:e2e          # Playwright (full user flows)
+# Integration Tests
+cd frontend/
+npm run test:integration  # Frontend + mocked SSE streams
+cd backend/  
+pytest tests/integration/ # Backend + real session flows
+pytest tests/test_sse/     # SSE connection and broadcasting
+
+# End-to-End Tests
+cd frontend/
+npm run test:e2e          # Playwright (complete user journeys)
+npm run test:e2e:ui       # Playwright with UI mode
+
+# Load Testing
+cd backend/
+pytest tests/load/        # Multi-user concurrent session tests
 ```
 
 ## Deployment Architecture
