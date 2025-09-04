@@ -455,6 +455,281 @@ async def stream_session_events(
 
 ## Service Layer Implementation
 
+### Global Session Limit Enforcer (`src/services/global_limit_enforcer.py`)
+
+```python
+import asyncio
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+from ..core.constants import MAX_SESSIONS, SESSION_TIMEOUT_MINUTES
+from ..models.events import SSEEvent
+from ..models.session import Session
+from ..core.exceptions import MaxSessionsException
+
+class GlobalLimitEnforcer:
+    """Enforces global session capacity limits across the application"""
+    
+    def __init__(self):
+        self._active_sessions: Dict[str, datetime] = {}  # session_id -> created_at
+        self._capacity_warnings_sent: set = set()  # Track warning notifications
+        self._lock = asyncio.Lock()
+    
+    async def can_create_session(self) -> tuple[bool, Optional[str]]:
+        """Check if new session can be created
+        
+        Returns: (can_create, reason_if_not)
+        """
+        async with self._lock:
+            active_count = len(self._active_sessions)
+            
+            if active_count >= MAX_SESSIONS:
+                return False, f"Maximum {MAX_SESSIONS} concurrent sessions reached"
+            
+            # Warn when approaching capacity
+            if active_count >= MAX_SESSIONS - 1:
+                return True, f"WARNING: Only {MAX_SESSIONS - active_count} session slot remaining"
+            
+            return True, None
+    
+    async def register_session(self, session_id: str) -> None:
+        """Register new active session"""
+        async with self._lock:
+            if len(self._active_sessions) >= MAX_SESSIONS:
+                raise MaxSessionsException(f"Cannot create session: {MAX_SESSIONS} session limit reached")
+            
+            self._active_sessions[session_id] = datetime.utcnow()
+    
+    async def unregister_session(self, session_id: str) -> None:
+        """Remove session from active tracking"""
+        async with self._lock:
+            if session_id in self._active_sessions:
+                del self._active_sessions[session_id]
+                
+                # Remove from capacity warnings if session was causing warnings
+                self._capacity_warnings_sent.discard(session_id)
+    
+    async def get_capacity_status(self) -> Dict[str, Any]:
+        """Get current capacity status for monitoring"""
+        async with self._lock:
+            active_count = len(self._active_sessions)
+            
+            return {
+                "active_sessions": active_count,
+                "max_sessions": MAX_SESSIONS,
+                "available_slots": MAX_SESSIONS - active_count,
+                "capacity_utilization": (active_count / MAX_SESSIONS) * 100,
+                "at_capacity": active_count >= MAX_SESSIONS,
+                "near_capacity": active_count >= MAX_SESSIONS - 1,
+                "active_session_ids": list(self._active_sessions.keys()),
+                "oldest_session_age_minutes": self._get_oldest_session_age_minutes()
+            }
+    
+    async def cleanup_expired_registrations(self) -> List[str]:
+        """Clean up expired session registrations that may not have been properly unregistered"""
+        async with self._lock:
+            current_time = datetime.utcnow()
+            expired_sessions = []
+            
+            for session_id, created_at in list(self._active_sessions.items()):
+                # If session is older than maximum possible lifetime, remove it
+                max_age = timedelta(minutes=SESSION_TIMEOUT_MINUTES + 10)  # Grace period for cleanup
+                if current_time - created_at > max_age:
+                    expired_sessions.append(session_id)
+                    del self._active_sessions[session_id]
+            
+            return expired_sessions
+    
+    def _get_oldest_session_age_minutes(self) -> Optional[int]:
+        """Get age of oldest active session in minutes"""
+        if not self._active_sessions:
+            return None
+        
+        oldest_time = min(self._active_sessions.values())
+        age_seconds = (datetime.utcnow() - oldest_time).total_seconds()
+        return int(age_seconds // 60)
+    
+    async def should_send_capacity_warning(self) -> bool:
+        """Check if capacity warning should be sent"""
+        async with self._lock:
+            active_count = len(self._active_sessions)
+            
+            # Send warning when at capacity or one slot remaining
+            if active_count >= MAX_SESSIONS - 1:
+                # Only send warning once per capacity threshold
+                warning_key = f"capacity_{active_count}"
+                if warning_key not in self._capacity_warnings_sent:
+                    self._capacity_warnings_sent.add(warning_key)
+                    return True
+            
+            return False
+```
+
+### Grace Period Manager (`src/services/grace_period_manager.py`)
+
+```python
+import asyncio
+from typing import Dict, Optional, Callable, Any
+from datetime import datetime, timedelta
+from ..models.session import Session
+from ..models.events import SSEEvent
+from ..core.constants import GRACE_PERIOD_MINUTES
+from ..utils.guid_generator import generate_guid
+
+class GracePeriodManager:
+    """Manages Scrum Master grace periods and automatic role transfers"""
+    
+    def __init__(self, event_broadcaster: Callable[[str, SSEEvent], None]):
+        self._grace_periods: Dict[str, asyncio.Task] = {}  # session_id -> timer task
+        self._broadcast_event = event_broadcaster
+        self._lock = asyncio.Lock()
+    
+    async def start_grace_period(self, session: Session, disconnected_user_id: str) -> bool:
+        """Start 5-minute grace period for disconnected Scrum Master
+        
+        Returns: True if grace period started, False if already in progress
+        """
+        async with self._lock:
+            # Only start if user is the Scrum Master
+            if session.scrum_master_id != disconnected_user_id:
+                return False
+            
+            # Don't start if already in grace period
+            if session.id in self._grace_periods:
+                return False
+            
+            # Update session state
+            session.status = 'grace_period'
+            session.grace_period_start = datetime.utcnow()
+            session.grace_period_expires = session.grace_period_start + timedelta(minutes=GRACE_PERIOD_MINUTES)
+            session.previous_scrum_master_id = disconnected_user_id
+            
+            # Start countdown timer
+            timer_task = asyncio.create_task(
+                self._grace_period_countdown(session.id, GRACE_PERIOD_MINUTES)
+            )
+            self._grace_periods[session.id] = timer_task
+            
+            # Broadcast grace period started event
+            await self._broadcast_event(session.id, SSEEvent(
+                type='grace_period_started',
+                session_id=session.id,
+                data={
+                    "disconnected_scrum_master_id": disconnected_user_id,
+                    "grace_period_minutes": GRACE_PERIOD_MINUTES,
+                    "expires_at": session.grace_period_expires.isoformat(),
+                    "message": f"Scrum Master disconnected. Session paused for {GRACE_PERIOD_MINUTES} minutes."
+                }
+            ))
+            
+            return True
+    
+    async def cancel_grace_period(self, session_id: str, reason: str = "Scrum Master reconnected") -> bool:
+        """Cancel ongoing grace period (e.g., when SM reconnects)
+        
+        Returns: True if grace period was cancelled, False if none was active
+        """
+        async with self._lock:
+            if session_id not in self._grace_periods:
+                return False
+            
+            # Cancel the timer task
+            timer_task = self._grace_periods[session_id]
+            timer_task.cancel()
+            del self._grace_periods[session_id]
+            
+            # Broadcast grace period ended event
+            await self._broadcast_event(session_id, SSEEvent(
+                type='grace_period_ended',
+                session_id=session_id,
+                data={
+                    "reason": reason,
+                    "session_resumed": True,
+                    "message": reason
+                }
+            ))
+            
+            return True
+    
+    async def check_scrum_master_reconnection(self, session: Session, reconnected_user_id: str) -> bool:
+        """Check if reconnecting user can resume Scrum Master role
+        
+        Returns: True if user resumed SM role, False otherwise
+        """
+        async with self._lock:
+            # Only allow if session is in grace period and user is the previous SM
+            if (session.status != 'grace_period' or 
+                session.previous_scrum_master_id != reconnected_user_id):
+                return False
+            
+            # Resume Scrum Master role
+            session.scrum_master_id = reconnected_user_id
+            session.status = 'waiting'  # Or previous status
+            session.grace_period_start = None
+            session.grace_period_expires = None
+            session.previous_scrum_master_id = None
+            
+            # Cancel grace period timer
+            await self.cancel_grace_period(session.id, "Scrum Master reconnected")
+            
+            return True
+    
+    async def _grace_period_countdown(self, session_id: str, total_minutes: int):
+        """Background task for grace period countdown with warnings"""
+        try:
+            # Send warning at 2 minutes remaining
+            warning_delay = (total_minutes - 2) * 60
+            if warning_delay > 0:
+                await asyncio.sleep(warning_delay)
+                await self._broadcast_event(session_id, SSEEvent(
+                    type='grace_period_warning',
+                    session_id=session_id,
+                    data={
+                        "minutes_remaining": 2,
+                        "message": "Grace period ending in 2 minutes. Scrum Master role will be transferred."
+                    }
+                ))
+            
+            # Wait for remaining time
+            await asyncio.sleep(2 * 60)  # Remaining 2 minutes
+            
+            # Grace period expired - transfer role
+            async with self._lock:
+                if session_id in self._grace_periods:
+                    await self._transfer_scrum_master_role(session_id)
+                    del self._grace_periods[session_id]
+                    
+        except asyncio.CancelledError:
+            # Grace period was cancelled (SM reconnected)
+            pass
+    
+    async def _transfer_scrum_master_role(self, session_id: str):
+        """Transfer Scrum Master role after grace period expires"""
+        # This would be called with session manager to transfer role
+        await self._broadcast_event(session_id, SSEEvent(
+            type='scrum_master_changed',
+            session_id=session_id,
+            data={
+                "reason": "grace_period_expired",
+                "message": "Grace period expired. Scrum Master role transferred to next participant."
+            }
+        ))
+    
+    async def get_grace_period_status(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get current grace period status for a session"""
+        async with self._lock:
+            if session_id not in self._grace_periods:
+                return None
+            
+            # Calculate remaining time (this would need session data)
+            return {
+                "active": True,
+                "session_id": session_id,
+                "started_at": "timestamp",  # Would get from session
+                "expires_at": "timestamp",   # Would get from session
+                "minutes_remaining": "calculated"
+            }
+```
+
 ### Session Manager (`src/services/session_manager.py`)
 
 ```python
@@ -474,15 +749,23 @@ class SessionManager:
         self._user_sessions: Dict[str, str] = {}  # user_id -> session_id
         self._lock = asyncio.Lock()
     
-    async def create_session(self, request: CreateSessionRequest) -> tuple[str, Session]:
+    async def create_session(self, request: CreateSessionRequest, global_enforcer) -> tuple[str, Session]:
         """Create new planning poker session
         
         Returns: (session_id, session_object)
-        Raises: RuntimeError if max sessions reached
+        Raises: MaxSessionsException if max sessions reached
         """
         async with self._lock:
+            # Check global capacity before creating
+            can_create, reason = await global_enforcer.can_create_session()
+            if not can_create:
+                from ..core.exceptions import MaxSessionsException
+                raise MaxSessionsException(reason)
+            
+            # Check local capacity (backup check)
             if len(self._sessions) >= MAX_SESSIONS:
-                raise RuntimeError("Maximum number of concurrent sessions reached")
+                from ..core.exceptions import MaxSessionsException
+                raise MaxSessionsException("Maximum number of concurrent sessions reached")
             
             session_id = generate_guid()
             user_id = generate_guid()
@@ -505,6 +788,9 @@ class SessionManager:
             
             self._sessions[session_id] = session
             self._user_sessions[user_id] = session_id
+            
+            # Register with global enforcer
+            await global_enforcer.register_session(session_id)
             
             return session_id, session
     
