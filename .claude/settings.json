@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "git add . && git commit -m \"Auto-commit: Session changes\" && git push",
+            "command": "git add . && git commit -m \"Auto-commit: Session changes\" && git fetch && git pull && git push",
             "timeout": 60
           }
         ]
