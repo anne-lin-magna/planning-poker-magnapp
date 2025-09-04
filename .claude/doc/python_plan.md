@@ -1457,6 +1457,659 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
+### Docker Configuration (`docker/Dockerfile`)
+```dockerfile
+# Production Dockerfile for MagnaPP Backend
+FROM python:3.11-slim as base
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Create non-root user
+RUN groupadd -r magnapp && useradd -r -g magnapp magnapp
+
+# Install system dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-deps -r requirements.txt
+
+# Copy application code
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+RUN chmod +x scripts/*.sh
+
+# Set ownership
+RUN chown -R magnapp:magnapp /app
+
+# Switch to non-root user
+USER magnapp
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python scripts/health_check.py || exit 1
+
+# Use tini for signal handling
+ENTRYPOINT ["tini", "--"]
+CMD ["./scripts/start.sh"]
+```
+
+### Docker Compose - Development (`docker/docker-compose.yml`)
+```yaml
+version: '3.8'
+
+services:
+  magnapp-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=true
+      - HOST=0.0.0.0
+      - PORT=8000
+      - CORS_ORIGINS=["http://localhost:5173"]
+      - MAX_SESSIONS=3
+      - MAX_USERS_PER_SESSION=16
+      - SESSION_TIMEOUT_MINUTES=10
+      - GRACE_PERIOD_MINUTES=5
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../src:/app/src:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "scripts/health_check.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for future session persistence
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+
+# volumes:
+#   redis_data:
+```
+
+### Docker Compose - Production (`docker/docker-compose.prod.yml`)
+```yaml
+version: '3.8'
+
+services:
+  magnapp-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8000
+      - MAX_SESSIONS=3
+      - MAX_USERS_PER_SESSION=16
+      - SESSION_TIMEOUT_MINUTES=10
+      - GRACE_PERIOD_MINUTES=5
+      - LOG_LEVEL=INFO
+      - CORS_ORIGINS=[""] # Set from environment
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "python", "scripts/health_check.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.magnapp.rule=Host(`api.magnapp.com`)"
+      - "traefik.http.services.magnapp.loadbalancer.server.port=8000"
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../deployment/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/ssl/certs:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - magnapp-backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.2'
+```
+
+### Nginx Configuration (`deployment/nginx.conf`)
+```nginx
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    
+    # Logging
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                   '$status $body_bytes_sent "$http_referer" '
+                   '"$http_user_agent" "$http_x_forwarded_for"';
+    
+    access_log /var/log/nginx/access.log main;
+    error_log /var/log/nginx/error.log warn;
+    
+    # Basic settings
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    
+    # Compression
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1000;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        application/json
+        application/javascript
+        text/xml
+        application/xml
+        application/xml+rss
+        text/javascript;
+    
+    # Rate limiting
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=sse:10m rate=5r/s;
+    
+    upstream magnapp_backend {
+        server magnapp-backend:8000;
+        keepalive 32;
+    }
+    
+    server {
+        listen 80;
+        server_name api.magnapp.com;
+        
+        # Redirect HTTP to HTTPS in production
+        # return 301 https://$server_name$request_uri;
+        
+        # For development, serve directly
+        location / {
+            return 301 https://$server_name$request_uri;
+        }
+    }
+    
+    server {
+        listen 443 ssl http2;
+        server_name api.magnapp.com;
+        
+        # SSL Configuration (production)
+        ssl_certificate /etc/ssl/certs/magnapp.crt;
+        ssl_certificate_key /etc/ssl/certs/magnapp.key;
+        ssl_session_timeout 1d;
+        ssl_session_cache shared:SSL:50m;
+        ssl_session_tickets off;
+        
+        # Modern SSL configuration
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
+        ssl_prefer_server_ciphers off;
+        
+        # Security headers
+        add_header Strict-Transport-Security "max-age=63072000" always;
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        
+        # API endpoints
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            
+            proxy_pass http://magnapp_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Timeouts
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+        }
+        
+        # Server-Sent Events (longer timeout)
+        location /api/sse/ {
+            limit_req zone=sse burst=5 nodelay;
+            
+            proxy_pass http://magnapp_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # SSE specific settings
+            proxy_set_header Connection '';
+            proxy_http_version 1.1;
+            chunked_transfer_encoding off;
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 5s;
+        }
+        
+        # Health check
+        location /health {
+            proxy_pass http://magnapp_backend;
+            access_log off;
+        }
+    }
+}
+```
+
+### Gunicorn Configuration (`deployment/gunicorn.conf.py`)
+```python
+# Gunicorn configuration for production deployment
+import multiprocessing
+import os
+
+# Server socket
+bind = "0.0.0.0:8000"
+backlog = 2048
+
+# Worker processes
+workers = min(multiprocessing.cpu_count() * 2 + 1, 4)  # Max 4 workers
+worker_class = "uvicorn.workers.UvicornWorker"
+worker_connections = 1000
+max_requests = 1000
+max_requests_jitter = 50
+preload_app = True
+
+# Timeouts
+timeout = 60
+keepalive = 5
+graceful_timeout = 30
+
+# Logging
+loglevel = os.getenv("LOG_LEVEL", "info").lower()
+accesslog = "/app/logs/access.log" if os.path.exists("/app/logs") else "-"
+errorlog = "/app/logs/error.log" if os.path.exists("/app/logs") else "-"
+access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" %(D)s'
+
+# Process naming
+proc_name = "magnapp-backend"
+
+# Server mechanics
+daemon = False
+pidfile = "/tmp/magnapp.pid"
+user = os.getenv("RUN_USER", "magnapp")
+group = os.getenv("RUN_GROUP", "magnapp")
+tmp_upload_dir = "/tmp"
+
+# SSL (if needed)
+keyfile = os.getenv("SSL_KEYFILE")
+certfile = os.getenv("SSL_CERTFILE")
+
+# Application specific
+raw_env = [
+    f"PYTHONPATH=/app/src",
+    f"MAX_SESSIONS={os.getenv('MAX_SESSIONS', '3')}",
+    f"MAX_USERS_PER_SESSION={os.getenv('MAX_USERS_PER_SESSION', '16')}",
+]
+
+def when_ready(server):
+    server.log.info("MagnaPP Backend ready to serve requests")
+
+def worker_int(worker):
+    worker.log.info("Worker received SIGINT, shutting down gracefully")
+
+def pre_fork(server, worker):
+    server.log.info(f"Worker spawned (pid: {worker.pid})")
+
+def post_fork(server, worker):
+    server.log.info(f"Worker {worker.pid} ready")
+```
+
+### Startup Script (`scripts/start.sh`)
+```bash
+#!/bin/bash
+set -e
+
+# MagnaPP Backend Startup Script
+echo "Starting MagnaPP Planning Poker Backend..."
+
+# Environment validation
+if [ -z "$MAX_SESSIONS" ]; then
+    export MAX_SESSIONS=3
+fi
+
+if [ -z "$MAX_USERS_PER_SESSION" ]; then
+    export MAX_USERS_PER_SESSION=16
+fi
+
+if [ -z "$SESSION_TIMEOUT_MINUTES" ]; then
+    export SESSION_TIMEOUT_MINUTES=10
+fi
+
+echo "Configuration:"
+echo "  MAX_SESSIONS: $MAX_SESSIONS"
+echo "  MAX_USERS_PER_SESSION: $MAX_USERS_PER_SESSION" 
+echo "  SESSION_TIMEOUT: $SESSION_TIMEOUT_MINUTES minutes"
+echo "  DEBUG: ${DEBUG:-false}"
+echo "  HOST: ${HOST:-0.0.0.0}"
+echo "  PORT: ${PORT:-8000}"
+
+# Create logs directory
+mkdir -p /app/logs
+
+# Development vs Production
+if [ "${DEBUG:-false}" = "true" ]; then
+    echo "Starting in DEVELOPMENT mode..."
+    exec uvicorn src.main:app \
+        --host ${HOST:-0.0.0.0} \
+        --port ${PORT:-8000} \
+        --reload \
+        --log-level debug
+else
+    echo "Starting in PRODUCTION mode..."
+    exec gunicorn \
+        --config deployment/gunicorn.conf.py \
+        --bind ${HOST:-0.0.0.0}:${PORT:-8000} \
+        src.main:app
+fi
+```
+
+### Health Check Script (`scripts/health_check.py`)
+```python
+#!/usr/bin/env python3
+"""Health check script for MagnaPP Backend"""
+import sys
+import httpx
+import asyncio
+import os
+from datetime import datetime
+
+async def check_health():
+    """Perform comprehensive health check"""
+    host = os.getenv('HOST', '0.0.0.0')
+    port = os.getenv('PORT', '8000')
+    base_url = f"http://{host}:{port}"
+    
+    checks = {
+        'basic_health': False,
+        'api_endpoints': False,
+        'capacity_check': False
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Basic health check
+            response = await client.get(f"{base_url}/health")
+            if response.status_code == 200:
+                checks['basic_health'] = True
+                print(f"✓ Basic health check passed - {response.status_code}")
+            
+            # API endpoints check
+            response = await client.get(f"{base_url}/api/sessions")
+            if response.status_code == 200:
+                checks['api_endpoints'] = True
+                print("✓ API endpoints accessible")
+            
+            # Capacity check
+            if 'capacity' in (await client.get(f"{base_url}/api/health/capacity")).text:
+                checks['capacity_check'] = True
+                print("✓ Capacity monitoring functional")
+                
+    except Exception as e:
+        print(f"✗ Health check failed: {e}")
+        return False
+    
+    # All checks must pass
+    all_passed = all(checks.values())
+    
+    print(f"\nHealth Check Summary ({datetime.now()})")
+    print(f"Overall Status: {'✓ HEALTHY' if all_passed else '✗ UNHEALTHY'}")
+    for check, status in checks.items():
+        print(f"  {check}: {'✓' if status else '✗'}")
+    
+    return all_passed
+
+if __name__ == "__main__":
+    try:
+        result = asyncio.run(check_health())
+        sys.exit(0 if result else 1)
+    except KeyboardInterrupt:
+        print("Health check interrupted")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Health check error: {e}")
+        sys.exit(1)
+```
+
+### Deployment Script (`scripts/deploy.sh`)
+```bash
+#!/bin/bash
+set -e
+
+# MagnaPP Backend Deployment Script
+
+echo "🚀 MagnaPP Planning Poker Deployment"
+echo "====================================="
+
+# Configuration
+IMAGE_NAME="magnapp/backend"
+TAG="${1:-latest}"
+ENVIRONMENT="${2:-production}"
+
+echo "Deploying version: $TAG"
+echo "Environment: $ENVIRONMENT"
+
+# Pre-deployment checks
+echo "\n📋 Pre-deployment validation..."
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "❌ Docker is not running"
+    exit 1
+fi
+
+# Check environment file
+if [ "$ENVIRONMENT" = "production" ] && [ ! -f ".env.prod" ]; then
+    echo "❌ Production environment file .env.prod not found"
+    exit 1
+fi
+
+echo "✅ Pre-deployment checks passed"
+
+# Build image
+echo "\n🔨 Building Docker image..."
+docker build -t $IMAGE_NAME:$TAG -f docker/Dockerfile .
+
+# Tag as latest if deploying latest
+if [ "$TAG" = "latest" ]; then
+    docker tag $IMAGE_NAME:$TAG $IMAGE_NAME:latest
+fi
+
+echo "✅ Image built successfully"
+
+# Health check before deployment
+echo "\n🏥 Running health checks..."
+python scripts/health_check.py || echo "⚠️  Pre-deployment health check failed (expected)"
+
+# Deploy based on environment
+if [ "$ENVIRONMENT" = "development" ]; then
+    echo "\n🛠️  Starting development deployment..."
+    docker-compose -f docker/docker-compose.yml down || true
+    docker-compose -f docker/docker-compose.yml up -d
+else
+    echo "\n🏭 Starting production deployment..."
+    
+    # Load production environment
+    export $(cat .env.prod | xargs)
+    
+    # Production deployment with zero-downtime
+    docker-compose -f docker/docker-compose.prod.yml down --remove-orphans || true
+    docker-compose -f docker/docker-compose.prod.yml up -d
+fi
+
+# Post-deployment health check
+echo "\n⏳ Waiting for service to be ready..."
+sleep 10
+
+for i in {1..12}; do
+    echo "Health check attempt $i/12..."
+    if python scripts/health_check.py; then
+        echo "\n✅ Deployment successful!"
+        echo "🌐 Service is healthy and ready to serve requests"
+        break
+    fi
+    
+    if [ $i -eq 12 ]; then
+        echo "\n❌ Deployment failed - service is not healthy"
+        echo "📋 Checking logs..."
+        docker-compose -f docker/docker-compose.${ENVIRONMENT}.yml logs --tail=50
+        exit 1
+    fi
+    
+    sleep 5
+done
+
+# Display service information
+echo "\n📊 Deployment Summary"
+echo "====================="
+echo "Image: $IMAGE_NAME:$TAG"
+echo "Environment: $ENVIRONMENT"
+echo "Status: ✅ RUNNING"
+
+if [ "$ENVIRONMENT" = "development" ]; then
+    echo "URL: http://localhost:8000"
+    echo "Health: http://localhost:8000/health"
+    echo "Docs: http://localhost:8000/docs"
+else
+    echo "URL: https://api.magnapp.com"
+    echo "Health: https://api.magnapp.com/health"
+fi
+
+echo "\n🎉 MagnaPP Backend deployed successfully!"
+```
+
+### Environment Files
+
+#### Development Environment (`.env.example`)
+```bash
+# MagnaPP Planning Poker - Environment Configuration
+
+# Server Configuration
+DEBUG=true
+HOST=0.0.0.0
+PORT=8000
+LOG_LEVEL=DEBUG
+
+# Session Configuration
+MAX_SESSIONS=3
+MAX_USERS_PER_SESSION=16
+SESSION_TIMEOUT_MINUTES=10
+GRACE_PERIOD_MINUTES=5
+CLEANUP_INTERVAL_SECONDS=120
+
+# CORS Configuration
+CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
+CORS_CREDENTIALS=true
+
+# Monitoring Configuration
+HEALTH_CHECK_INTERVAL=30
+METRICS_ENABLED=true
+LOG_REQUESTS=true
+
+# Mobile Optimization
+MOBILE_HEARTBEAT_INTERVAL=30
+MOBILE_BATTERY_OPTIMIZATION=true
+NETWORK_ADAPTIVE_FEATURES=true
+
+# Development Only
+RELOAD=true
+AUTO_RELOAD_DIRS=["src"]
+```
+
+#### Production Environment Template (`.env.prod.example`)
+```bash
+# MagnaPP Planning Poker - Production Configuration
+
+# Server Configuration
+DEBUG=false
+HOST=0.0.0.0
+PORT=8000
+LOG_LEVEL=INFO
+
+# Session Configuration
+MAX_SESSIONS=3
+MAX_USERS_PER_SESSION=16
+SESSION_TIMEOUT_MINUTES=10
+GRACE_PERIOD_MINUTES=5
+CLEANUP_INTERVAL_SECONDS=120
+
+# CORS Configuration (Set your production domain)
+CORS_ORIGINS=["https://magnapp.com","https://www.magnapp.com"]
+CORS_CREDENTIALS=true
+
+# SSL Configuration (if using direct SSL)
+# SSL_KEYFILE=/etc/ssl/private/magnapp.key
+# SSL_CERTFILE=/etc/ssl/certs/magnapp.crt
+
+# Monitoring Configuration
+HEALTH_CHECK_INTERVAL=30
+METRICS_ENABLED=true
+LOG_REQUESTS=false  # Reduce logging in production
+APM_ENABLED=false   # Set to true with APM service
+
+# Security
+SECURE_HEADERS=true
+RATE_LIMITING=true
+MAX_REQUEST_SIZE=1048576  # 1MB
+
+# Mobile Optimization
+MOBILE_HEARTBEAT_INTERVAL=60  # Longer interval in production
+MOBILE_BATTERY_OPTIMIZATION=true
+NETWORK_ADAPTIVE_FEATURES=true
+
+# Process Management
+WORKERS=4
+WORKER_CONNECTIONS=1000
+MAX_REQUESTS=1000
+```
+
 ### FastAPI Application Setup (`src/main.py`)
 ```python
 import asyncio
@@ -1464,7 +2117,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .api import sessions, voting, users, sse
+from .api import sessions, voting, users, sse, health, mobile
 from .services.cleanup_service import CleanupService
 from .core.config import settings
 
@@ -1504,6 +2157,8 @@ app.include_router(sessions.router)
 app.include_router(voting.router)
 app.include_router(users.router)
 app.include_router(sse.router, prefix="/api/sse")
+app.include_router(health.router)
+app.include_router(mobile.router)
 
 @app.get("/health")
 async def health_check():
