@@ -9,7 +9,9 @@
       "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
       "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp\\.claude\\doc/**)",
       "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
-      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)"
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp2/**)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp2\\.claude\\doc/**)"
     ],
     "deny": [],
     "ask": []
