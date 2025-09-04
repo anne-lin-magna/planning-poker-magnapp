@@ -209,9 +209,47 @@ const submitVote = async (vote: string) => {
 
 ## Data Models and Types
 
-### Shared TypeScript/Python Types
+### Python Backend Models (Pydantic)
+```python
+# User Model
+class User(BaseModel):
+    id: str = Field(..., description="Unique user identifier (GUID)")
+    name: str = Field(..., min_length=1, max_length=50)
+    avatar: str = Field(..., description="Avatar identifier")
+    is_online: bool = Field(default=True)
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+
+# Session Model
+class Session(BaseModel):
+    id: str = Field(..., description="Session GUID")
+    name: str = Field(..., min_length=1, max_length=100)
+    participants: List[User] = Field(default_factory=list)
+    scrum_master_id: str = Field(..., description="Scrum Master user ID")
+    status: SessionStatus = Field(default='waiting')
+    current_round: Optional[VotingRound] = Field(default=None)
+    expires_at: datetime = Field(..., description="Session expiry timestamp")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_activity: datetime = Field(default_factory=datetime.utcnow)
+
+# Voting Model
+class VotingRound(BaseModel):
+    id: str = Field(..., description="Round identifier")
+    votes: Dict[str, Vote] = Field(default_factory=dict)
+    is_revealed: bool = Field(default=False)
+    statistics: Optional[VotingStatistics] = Field(default=None)
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+
+class VotingStatistics(BaseModel):
+    average: Optional[float] = Field(None, description="Average of numeric votes")
+    distribution: Dict[str, int] = Field(..., description="Vote counts")
+    consensus: bool = Field(..., description="All numeric votes identical")
+    coffee_votes: int = Field(default=0)
+    total_votes: int = Field(..., description="Total votes cast")
+```
+
+### Frontend TypeScript Interfaces
 ```typescript
-// User Model
+// Frontend mirrors backend models for consistency
 interface User {
   id: string;
   name: string;
@@ -220,22 +258,20 @@ interface User {
   joinedAt: string;
 }
 
-// Session Model  
 interface Session {
   id: string;
   name: string;
   participants: User[];
   scrumMasterId: string;
-  status: 'waiting' | 'voting' | 'revealing' | 'results';
+  status: 'waiting' | 'voting' | 'revealing' | 'results' | 'paused';
   currentRound: VotingRound | null;
   expiresAt: string;
   createdAt: string;
 }
 
-// Voting Model
 interface VotingRound {
   id: string;
-  votes: Record<string, string>; // userId → vote
+  votes: Record<string, string>; // userId → vote value
   isRevealed: boolean;
   statistics: {
     average: number;
