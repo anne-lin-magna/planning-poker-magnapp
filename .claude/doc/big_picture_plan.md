@@ -103,23 +103,52 @@ App (Redux Provider + MUI Theme)
     └── ToastNotifications (user feedback)
 ```
 
+### Backend Service Architecture
+```
+backend/
+├── src/
+│   ├── main.py                    # FastAPI application entry point
+│   ├── models/                    # Pydantic data models
+│   │   ├── session.py             # Session and user models
+│   │   ├── voting.py              # Voting and statistics models
+│   │   └── events.py              # SSE event models
+│   ├── api/                       # API route handlers
+│   │   ├── sessions.py            # Session CRUD endpoints
+│   │   ├── voting.py              # Voting flow endpoints
+│   │   ├── users.py               # User management endpoints
+│   │   └── sse.py                 # Server-Sent Events endpoint
+│   ├── services/                  # Business logic layer
+│   │   ├── session_manager.py     # Core session management
+│   │   ├── voting_manager.py      # Voting logic and statistics
+│   │   ├── sse_manager.py         # Real-time event broadcasting
+│   │   └── cleanup_service.py     # Background cleanup tasks
+│   └── core/                      # Configuration and utilities
+│       ├── config.py              # Environment configuration
+│       ├── exceptions.py          # Custom exception hierarchy
+│       └── constants.py           # Application constants
+```
+
 ### Backend API Structure
 ```
 /api/
 ├── sessions/
-│   ├── POST /           # Create session
-│   ├── GET /            # List active sessions
-│   ├── GET /{id}        # Get session details
-│   └── POST /{id}/join  # Join session
+│   ├── POST /                     # Create session
+│   ├── GET /                      # List active sessions
+│   ├── GET /{id}                  # Get session details
+│   ├── POST /{id}/join            # Join session
+│   ├── POST /{id}/leave           # Leave session
+│   └── DELETE /{id}               # End session (Scrum Master)
 ├── voting/
-│   ├── POST /{id}/vote     # Submit vote
-│   ├── POST /{id}/reveal   # Reveal votes (Scrum Master)
-│   └── POST /{id}/start    # Start voting round
+│   ├── POST /{id}/start           # Start voting round (Scrum Master)
+│   ├── POST /{id}/vote            # Submit vote
+│   ├── POST /{id}/reveal          # Reveal votes (Scrum Master)
+│   └── GET /{id}/round            # Get current round status
 ├── users/
-│   ├── POST /{session_id}/kick/{user_id}  # Kick user
-│   └── POST /{session_id}/transfer        # Transfer Scrum Master
+│   ├── POST /{session_id}/kick/{user_id}    # Kick user (Scrum Master)
+│   ├── POST /{session_id}/transfer          # Transfer Scrum Master role
+│   └── POST /{session_id}/reconnect         # Reconnect after disconnection
 └── sse/
-    └── GET /{session_id}  # EventSource endpoint
+    └── GET /{session_id}          # EventSource streaming endpoint
 ```
 
 ## Real-time Communication Flow
@@ -180,9 +209,47 @@ const submitVote = async (vote: string) => {
 
 ## Data Models and Types
 
-### Shared TypeScript/Python Types
+### Python Backend Models (Pydantic)
+```python
+# User Model
+class User(BaseModel):
+    id: str = Field(..., description="Unique user identifier (GUID)")
+    name: str = Field(..., min_length=1, max_length=50)
+    avatar: str = Field(..., description="Avatar identifier")
+    is_online: bool = Field(default=True)
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+
+# Session Model
+class Session(BaseModel):
+    id: str = Field(..., description="Session GUID")
+    name: str = Field(..., min_length=1, max_length=100)
+    participants: List[User] = Field(default_factory=list)
+    scrum_master_id: str = Field(..., description="Scrum Master user ID")
+    status: SessionStatus = Field(default='waiting')
+    current_round: Optional[VotingRound] = Field(default=None)
+    expires_at: datetime = Field(..., description="Session expiry timestamp")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_activity: datetime = Field(default_factory=datetime.utcnow)
+
+# Voting Model
+class VotingRound(BaseModel):
+    id: str = Field(..., description="Round identifier")
+    votes: Dict[str, Vote] = Field(default_factory=dict)
+    is_revealed: bool = Field(default=False)
+    statistics: Optional[VotingStatistics] = Field(default=None)
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+
+class VotingStatistics(BaseModel):
+    average: Optional[float] = Field(None, description="Average of numeric votes")
+    distribution: Dict[str, int] = Field(..., description="Vote counts")
+    consensus: bool = Field(..., description="All numeric votes identical")
+    coffee_votes: int = Field(default=0)
+    total_votes: int = Field(..., description="Total votes cast")
+```
+
+### Frontend TypeScript Interfaces
 ```typescript
-// User Model
+// Frontend mirrors backend models for consistency
 interface User {
   id: string;
   name: string;
@@ -191,22 +258,20 @@ interface User {
   joinedAt: string;
 }
 
-// Session Model  
 interface Session {
   id: string;
   name: string;
   participants: User[];
   scrumMasterId: string;
-  status: 'waiting' | 'voting' | 'revealing' | 'results';
+  status: 'waiting' | 'voting' | 'revealing' | 'results' | 'paused';
   currentRound: VotingRound | null;
   expiresAt: string;
   createdAt: string;
 }
 
-// Voting Model
 interface VotingRound {
   id: string;
-  votes: Record<string, string>; // userId → vote
+  votes: Record<string, string>; // userId → vote value
   isRevealed: boolean;
   statistics: {
     average: number;
@@ -221,40 +286,76 @@ interface VotingRound {
 
 ### 1. Development Environment Setup
 ```bash
-# Start both services in development
-npm run dev:frontend  # Vite dev server on :5173
-python -m uvicorn backend.main:app --reload --port 8000
+# Frontend Development
+cd frontend/
+npm install
+npm run dev              # Vite dev server on :5173
 
+# Backend Development  
+cd backend/
+python -m venv venv
+source venv/bin/activate # Windows: venv\Scripts\activate
+pip install -r requirements-dev.txt
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+
+# Integrated Development
 # Vite proxies API calls to :8000
 # SSE connections go directly to backend
+# Both services auto-reload on code changes
 ```
 
 ### 2. Build and Deployment Pipeline
 ```yaml
 # Frontend Build (Vite)
-build:
-  - npm run build
-  - outputs: dist/ (static files)
-  - deployment: nginx or CDN
+frontend_build:
+  - npm run build                    # Build optimized production bundle
+  - outputs: dist/ (static files)    # Static files for web server
+  - deployment: nginx or CDN         # Serve static assets
 
-# Backend Build (Python)
-build:
-  - pip install -r requirements.txt
-  - deployment: uvicorn with gunicorn
+# Backend Deployment (FastAPI)
+backend_deployment:
+  - python -m venv venv              # Create virtual environment
+  - pip install -r requirements.txt # Install production dependencies
+  - uvicorn src.main:app --host 0.0.0.0 --port 8000
+  - production: gunicorn + uvicorn workers
+  - environment: Python 3.11+ required
+  - monitoring: built-in /health endpoint
+
+# Production Configuration
+production_stack:
+  - reverse_proxy: nginx → FastAPI backend
+  - static_assets: nginx serves frontend dist/
+  - sse_streaming: nginx proxy_pass to FastAPI
+  - ssl_termination: nginx handles HTTPS
 ```
 
 ### 3. Testing Strategy Integration
 ```bash
-# Unit Tests
-npm run test              # Vitest (frontend components/hooks)
-pytest tests/             # Python (backend logic/API)
+# Frontend Unit Tests
+cd frontend/
+npm run test              # Vitest (components, hooks, Redux slices)
+npm run test:coverage     # Coverage reporting
 
-# Integration Tests  
-npm run test:integration  # Frontend + mocked SSE
-pytest tests/integration/ # Backend + real sessions
+# Backend Unit Tests
+cd backend/
+pytest tests/             # Pytest (models, services, API endpoints)
+pytest tests/ --cov=src   # Coverage with pytest-cov
 
-# E2E Tests
-npm run test:e2e          # Playwright (full user flows)
+# Integration Tests
+cd frontend/
+npm run test:integration  # Frontend + mocked SSE streams
+cd backend/  
+pytest tests/integration/ # Backend + real session flows
+pytest tests/test_sse/     # SSE connection and broadcasting
+
+# End-to-End Tests
+cd frontend/
+npm run test:e2e          # Playwright (complete user journeys)
+npm run test:e2e:ui       # Playwright with UI mode
+
+# Load Testing
+cd backend/
+pytest tests/load/        # Multi-user concurrent session tests
 ```
 
 ## Deployment Architecture
