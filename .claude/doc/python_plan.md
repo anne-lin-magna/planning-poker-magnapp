@@ -730,6 +730,266 @@ class GracePeriodManager:
             }
 ```
 
+### Reconnection Service (`src/services/reconnection_service.py`)
+
+```python
+import asyncio
+import hashlib
+import json
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime
+from ..models.session import Session
+from ..models.events import SSEEvent
+from ..models.voting import VotingRound
+from ..utils.guid_generator import generate_guid
+
+class ReconnectionService:
+    """Handles reconnection data synchronization and conflict resolution"""
+    
+    def __init__(self, session_manager, sse_manager):
+        self.session_manager = session_manager
+        self.sse_manager = sse_manager
+        self._client_states: Dict[str, Dict[str, Any]] = {}  # client_id -> last_known_state
+        self._lock = asyncio.Lock()
+    
+    async def handle_reconnection(self, session_id: str, user_id: str, 
+                                client_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Handle user reconnection with state synchronization
+        
+        Args:
+            session_id: Session to reconnect to
+            user_id: User reconnecting
+            client_state: Client's last known state (optional)
+            
+        Returns: Complete synchronization package for client
+        """
+        async with self._lock:
+            try:
+                # Get current server state
+                session = await self.session_manager.get_session(session_id)
+                server_state = self._extract_session_state(session)
+                
+                # Determine sync strategy
+                sync_result = await self._determine_sync_strategy(
+                    session_id, user_id, client_state, server_state
+                )
+                
+                # Apply synchronization
+                if sync_result['strategy'] == 'full_sync':
+                    sync_data = await self._perform_full_sync(session, user_id)
+                elif sync_result['strategy'] == 'delta_sync':
+                    sync_data = await self._perform_delta_sync(
+                        session, user_id, client_state, server_state
+                    )
+                else:  # no_sync_needed
+                    sync_data = {'type': 'no_sync_needed', 'message': 'Client state is current'}
+                
+                # Update client state tracking
+                client_id = f"{session_id}_{user_id}"
+                self._client_states[client_id] = server_state
+                
+                # Broadcast reconnection event
+                await self.sse_manager.broadcast_to_session(session_id, SSEEvent(
+                    type='user_joined',
+                    session_id=session_id,
+                    data={
+                        'user_id': user_id,
+                        'reconnected': True,
+                        'sync_strategy': sync_result['strategy']
+                    }
+                ))
+                
+                return {
+                    'success': True,
+                    'sync_data': sync_data,
+                    'server_state': server_state,
+                    'conflicts_resolved': sync_result.get('conflicts_resolved', []),
+                    'message': sync_result.get('message', 'Reconnection successful')
+                }
+                
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'fallback_action': 'full_page_reload',
+                    'message': 'Reconnection failed, please refresh the page'
+                }
+    
+    async def _determine_sync_strategy(self, session_id: str, user_id: str, 
+                                     client_state: Optional[Dict], 
+                                     server_state: Dict) -> Dict[str, Any]:
+        """Determine appropriate synchronization strategy"""
+        
+        if not client_state:
+            return {
+                'strategy': 'full_sync',
+                'reason': 'No client state provided',
+                'message': 'Performing full synchronization'
+            }
+        
+        # Compare state versions
+        client_version = client_state.get('state_version', 0)
+        server_version = server_state.get('state_version', 1)
+        
+        if client_version == server_version:
+            # Check checksums for integrity
+            client_checksum = client_state.get('state_checksum')
+            server_checksum = server_state.get('state_checksum')
+            
+            if client_checksum == server_checksum:
+                return {
+                    'strategy': 'no_sync_needed',
+                    'reason': 'Client state is current',
+                    'message': 'No synchronization needed'
+                }
+        
+        # Determine if delta sync is possible
+        version_gap = server_version - client_version
+        if version_gap <= 5:  # Allow delta sync for small gaps
+            return {
+                'strategy': 'delta_sync',
+                'reason': f'Version gap of {version_gap} allows delta sync',
+                'message': 'Performing delta synchronization'
+            }
+        
+        # Fall back to full sync
+        return {
+            'strategy': 'full_sync',
+            'reason': f'Large version gap ({version_gap}) requires full sync',
+            'message': 'Performing full synchronization'
+        }
+    
+    async def _perform_full_sync(self, session: Session, user_id: str) -> Dict[str, Any]:
+        """Perform complete state synchronization"""
+        return {
+            'type': 'full_sync',
+            'session': session.dict(),
+            'user_permissions': self._get_user_permissions(session, user_id),
+            'recommended_actions': [
+                'Update local session state',
+                'Refresh voting UI if needed',
+                'Update user list display'
+            ]
+        }
+    
+    async def _perform_delta_sync(self, session: Session, user_id: str, 
+                                client_state: Dict, server_state: Dict) -> Dict[str, Any]:
+        """Perform incremental state synchronization"""
+        
+        changes = []
+        conflicts = []
+        
+        # Compare participants
+        client_participants = {p['id']: p for p in client_state.get('participants', [])}
+        server_participants = {p.id: p.dict() for p in session.participants}
+        
+        # Detect participant changes
+        for user_id, participant in server_participants.items():
+            if user_id not in client_participants:
+                changes.append({
+                    'type': 'participant_added',
+                    'data': participant
+                })
+            elif client_participants[user_id] != participant:
+                changes.append({
+                    'type': 'participant_updated', 
+                    'data': participant
+                })
+        
+        for user_id in client_participants:
+            if user_id not in server_participants:
+                changes.append({
+                    'type': 'participant_removed',
+                    'data': {'id': user_id}
+                })
+        
+        # Compare voting state
+        client_voting = client_state.get('current_round')
+        server_voting = session.current_round.dict() if session.current_round else None
+        
+        if client_voting != server_voting:
+            changes.append({
+                'type': 'voting_state_changed',
+                'data': server_voting
+            })
+        
+        # Check for voting conflicts
+        if (client_voting and server_voting and 
+            client_voting.get('is_revealed') != server_voting.get('is_revealed')):
+            conflicts.append({
+                'type': 'voting_reveal_conflict',
+                'client_state': client_voting.get('is_revealed'),
+                'server_state': server_voting.get('is_revealed'),
+                'resolution': 'Server state takes precedence'
+            })
+        
+        return {
+            'type': 'delta_sync',
+            'changes': changes,
+            'conflicts_resolved': conflicts,
+            'recommended_actions': [
+                'Apply incremental changes',
+                'Resolve any UI conflicts',
+                'Maintain user's current focus'
+            ]
+        }
+    
+    def _extract_session_state(self, session: Session) -> Dict[str, Any]:
+        """Extract relevant state for synchronization"""
+        state = {
+            'session_id': session.id,
+            'status': session.status,
+            'participants': [p.dict() for p in session.participants],
+            'scrum_master_id': session.scrum_master_id,
+            'current_round': session.current_round.dict() if session.current_round else None,
+            'state_version': session.state_version,
+            'last_activity': session.last_activity.isoformat(),
+            'grace_period_active': session.status == 'grace_period'
+        }
+        
+        # Calculate checksum for integrity verification
+        state_json = json.dumps(state, sort_keys=True)
+        state['state_checksum'] = hashlib.sha256(state_json.encode()).hexdigest()[:16]
+        
+        return state
+    
+    def _get_user_permissions(self, session: Session, user_id: str) -> Dict[str, bool]:
+        """Get user's current permissions in the session"""
+        is_scrum_master = session.scrum_master_id == user_id
+        is_participant = any(p.id == user_id for p in session.participants)
+        can_reconnect_as_sm = (session.previous_scrum_master_id == user_id and 
+                              session.status == 'grace_period')
+        
+        return {
+            'is_scrum_master': is_scrum_master,
+            'is_participant': is_participant,
+            'can_start_voting': is_scrum_master and session.status in ['waiting', 'results'],
+            'can_reveal_votes': is_scrum_master and session.status == 'voting',
+            'can_vote': is_participant and session.status == 'voting',
+            'can_reconnect_as_scrum_master': can_reconnect_as_sm,
+            'can_kick_users': is_scrum_master
+        }
+    
+    async def validate_client_state(self, session_id: str, user_id: str, 
+                                  client_checksum: str) -> bool:
+        """Validate client state integrity using checksum"""
+        try:
+            session = await self.session_manager.get_session(session_id)
+            server_state = self._extract_session_state(session)
+            server_checksum = server_state.get('state_checksum')
+            
+            return client_checksum == server_checksum
+        except Exception:
+            return False
+    
+    async def cleanup_client_state(self, session_id: str, user_id: str):
+        """Clean up stored client state when user leaves"""
+        async with self._lock:
+            client_id = f"{session_id}_{user_id}"
+            if client_id in self._client_states:
+                del self._client_states[client_id]
+```
+
 ### Session Manager (`src/services/session_manager.py`)
 
 ```python
@@ -829,8 +1089,9 @@ class SessionManager:
             # Handle Scrum Master leaving
             if session.scrum_master_id == user_id:
                 if session.participants:
-                    # Transfer to first remaining participant
-                    session.scrum_master_id = session.participants[0].id
+                    # Start grace period instead of immediate transfer
+                    # (This would integrate with GracePeriodManager)
+                    session.scrum_master_id = session.participants[0].id  # Temporary assignment
                 else:
                     # No participants left, mark for cleanup
                     session.expires_at = datetime.utcnow()
