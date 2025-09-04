@@ -23,6 +23,11 @@
           },
           {
             "type": "command",
+            "command": "git push",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "powershell -c \"[console]::beep(600,200)\""
           }
         ]
