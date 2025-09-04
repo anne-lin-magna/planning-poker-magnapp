@@ -18,27 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"C:\\Users\\ALN\\AppData\\Roaming\\npm\\node_modules\\rins_hooks\\hooks\\auto-commit\\index.js\"",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "git push",
-            "timeout": 30
-          },
-          {
-            "type": "command",
             "command": "powershell -c \"[console]::beep(600,200)\""
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "git add . && git commit -m \"Auto-commit: Command execution\" && git push",
-            "timeout": 60
           }
         ]
       }
@@ -49,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "git status"
+            "command": "git add . && git commit -m \"Auto-commit: Session changes\" && git push",
+            "timeout": 60
           }
         ]
       }
