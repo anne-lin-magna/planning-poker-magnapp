@@ -286,12 +286,22 @@ interface VotingRound {
 
 ### 1. Development Environment Setup
 ```bash
-# Start both services in development
-npm run dev:frontend  # Vite dev server on :5173
-python -m uvicorn backend.main:app --reload --port 8000
+# Frontend Development
+cd frontend/
+npm install
+npm run dev              # Vite dev server on :5173
 
+# Backend Development  
+cd backend/
+python -m venv venv
+source venv/bin/activate # Windows: venv\Scripts\activate
+pip install -r requirements-dev.txt
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+
+# Integrated Development
 # Vite proxies API calls to :8000
 # SSE connections go directly to backend
+# Both services auto-reload on code changes
 ```
 
 ### 2. Build and Deployment Pipeline
