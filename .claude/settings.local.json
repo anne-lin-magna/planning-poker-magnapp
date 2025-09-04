@@ -20,7 +20,8 @@
       "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
       "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
       "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
-      "Bash(npm create:*)"
+      "Bash(npm create:*)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp\\frontend/**)"
     ],
     "deny": [],
     "ask": []
