@@ -4,7 +4,12 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp\\.claude\\doc/**)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp\\.claude\\doc/**)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)",
+      "Read(/C:\\MagnaBC Repo\\Upskilling\\planning-poker-magnapp/**)"
     ],
     "deny": [],
     "ask": []
