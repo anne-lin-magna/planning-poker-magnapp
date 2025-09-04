@@ -17,20 +17,27 @@ backend/
 │   │   ├── session.py             # Session-related models
 │   │   ├── user.py                # User-related models
 │   │   ├── voting.py              # Voting-related models
-│   │   └── events.py              # SSE event models
+│   │   ├── events.py              # SSE event models
+│   │   └── errors.py              # Enhanced error models
 │   ├── api/                       # API route handlers
 │   │   ├── __init__.py
 │   │   ├── sessions.py            # Session management endpoints
 │   │   ├── voting.py              # Voting endpoints
 │   │   ├── users.py               # User management endpoints
-│   │   └── sse.py                 # Server-Sent Events endpoint
+│   │   ├── sse.py                 # Server-Sent Events endpoint
+│   │   ├── health.py              # Health and monitoring endpoints
+│   │   └── mobile.py              # Mobile-specific API endpoints
 │   ├── services/                  # Business logic services
 │   │   ├── __init__.py
 │   │   ├── session_manager.py     # Core session management
 │   │   ├── voting_manager.py      # Voting logic and statistics
 │   │   ├── user_manager.py        # User management within sessions
 │   │   ├── sse_manager.py         # SSE connection and broadcasting
-│   │   └── cleanup_service.py     # Background cleanup tasks
+│   │   ├── cleanup_service.py     # Background cleanup tasks
+│   │   ├── global_limit_enforcer.py # Global session capacity enforcement
+│   │   ├── grace_period_manager.py # Scrum Master grace period handling
+│   │   ├── reconnection_service.py # Reconnection and state sync
+│   │   └── monitoring_service.py  # Monitoring and observability
 │   ├── core/                      # Core utilities and configuration
 │   │   ├── __init__.py
 │   │   ├── config.py              # Application configuration
@@ -53,6 +60,18 @@ backend/
 ├── requirements-dev.txt           # Development dependencies
 ├── pyproject.toml                # Project configuration
 ├── .env.example                  # Environment variables example
+├── docker/                       # Docker configuration
+│   ├── Dockerfile                # Production container
+│   ├── docker-compose.yml        # Local development
+│   └── docker-compose.prod.yml   # Production deployment
+├── deployment/                   # Deployment configuration
+│   ├── nginx.conf                # Nginx reverse proxy config
+│   ├── gunicorn.conf.py          # Gunicorn WSGI server config
+│   └── supervisord.conf          # Process management
+├── scripts/                      # Deployment and utility scripts
+│   ├── start.sh                  # Production startup script
+│   ├── deploy.sh                 # Deployment script
+│   └── health_check.py           # Health check script
 └── README.md                     # Backend documentation
 ```
 
@@ -96,7 +115,7 @@ from typing import List, Optional, Literal
 from .user import User
 from .voting import VotingRound
 
-SessionStatus = Literal['waiting', 'voting', 'revealing', 'results', 'paused']
+SessionStatus = Literal['waiting', 'voting', 'revealing', 'results', 'paused', 'grace_period']
 
 class Session(BaseModel):
     """Core session model"""
@@ -109,6 +128,18 @@ class Session(BaseModel):
     expires_at: datetime = Field(..., description="Session expiry timestamp")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_activity: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Grace period management
+    grace_period_start: Optional[datetime] = Field(default=None, description="Grace period start time")
+    grace_period_expires: Optional[datetime] = Field(default=None, description="Grace period expiry")
+    previous_scrum_master_id: Optional[str] = Field(default=None, description="Previous SM for reconnection")
+    
+    # Mobile optimization settings per user
+    mobile_optimizations: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    
+    # State synchronization
+    state_version: int = Field(default=1, description="State version for sync")
+    state_checksum: Optional[str] = Field(default=None, description="State integrity checksum")
     
 class CreateSessionRequest(BaseModel):
     """Request model for session creation"""
@@ -190,7 +221,10 @@ from datetime import datetime
 EventType = Literal[
     'session_updated', 'user_joined', 'user_left', 'user_disconnected',
     'voting_started', 'vote_submitted', 'votes_revealed', 'round_completed',
-    'session_expired', 'scrum_master_changed', 'session_paused'
+    'session_expired', 'scrum_master_changed', 'session_paused',
+    'grace_period_started', 'grace_period_warning', 'grace_period_ended',
+    'session_capacity_warning', 'mobile_optimization_applied', 'state_sync_required',
+    'error_recovery_needed', 'network_partition_detected'
 ]
 
 class SSEEvent(BaseModel):
