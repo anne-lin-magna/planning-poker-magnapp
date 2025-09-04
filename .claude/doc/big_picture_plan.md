@@ -307,15 +307,26 @@ uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ### 2. Build and Deployment Pipeline
 ```yaml
 # Frontend Build (Vite)
-build:
-  - npm run build
-  - outputs: dist/ (static files)
-  - deployment: nginx or CDN
+frontend_build:
+  - npm run build                    # Build optimized production bundle
+  - outputs: dist/ (static files)    # Static files for web server
+  - deployment: nginx or CDN         # Serve static assets
 
-# Backend Build (Python)
-build:
-  - pip install -r requirements.txt
-  - deployment: uvicorn with gunicorn
+# Backend Deployment (FastAPI)
+backend_deployment:
+  - python -m venv venv              # Create virtual environment
+  - pip install -r requirements.txt # Install production dependencies
+  - uvicorn src.main:app --host 0.0.0.0 --port 8000
+  - production: gunicorn + uvicorn workers
+  - environment: Python 3.11+ required
+  - monitoring: built-in /health endpoint
+
+# Production Configuration
+production_stack:
+  - reverse_proxy: nginx → FastAPI backend
+  - static_assets: nginx serves frontend dist/
+  - sse_streaming: nginx proxy_pass to FastAPI
+  - ssl_termination: nginx handles HTTPS
 ```
 
 ### 3. Testing Strategy Integration
