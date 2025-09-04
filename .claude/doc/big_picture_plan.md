@@ -103,23 +103,52 @@ App (Redux Provider + MUI Theme)
     └── ToastNotifications (user feedback)
 ```
 
+### Backend Service Architecture
+```
+backend/
+├── src/
+│   ├── main.py                    # FastAPI application entry point
+│   ├── models/                    # Pydantic data models
+│   │   ├── session.py             # Session and user models
+│   │   ├── voting.py              # Voting and statistics models
+│   │   └── events.py              # SSE event models
+│   ├── api/                       # API route handlers
+│   │   ├── sessions.py            # Session CRUD endpoints
+│   │   ├── voting.py              # Voting flow endpoints
+│   │   ├── users.py               # User management endpoints
+│   │   └── sse.py                 # Server-Sent Events endpoint
+│   ├── services/                  # Business logic layer
+│   │   ├── session_manager.py     # Core session management
+│   │   ├── voting_manager.py      # Voting logic and statistics
+│   │   ├── sse_manager.py         # Real-time event broadcasting
+│   │   └── cleanup_service.py     # Background cleanup tasks
+│   └── core/                      # Configuration and utilities
+│       ├── config.py              # Environment configuration
+│       ├── exceptions.py          # Custom exception hierarchy
+│       └── constants.py           # Application constants
+```
+
 ### Backend API Structure
 ```
 /api/
 ├── sessions/
-│   ├── POST /           # Create session
-│   ├── GET /            # List active sessions
-│   ├── GET /{id}        # Get session details
-│   └── POST /{id}/join  # Join session
+│   ├── POST /                     # Create session
+│   ├── GET /                      # List active sessions
+│   ├── GET /{id}                  # Get session details
+│   ├── POST /{id}/join            # Join session
+│   ├── POST /{id}/leave           # Leave session
+│   └── DELETE /{id}               # End session (Scrum Master)
 ├── voting/
-│   ├── POST /{id}/vote     # Submit vote
-│   ├── POST /{id}/reveal   # Reveal votes (Scrum Master)
-│   └── POST /{id}/start    # Start voting round
+│   ├── POST /{id}/start           # Start voting round (Scrum Master)
+│   ├── POST /{id}/vote            # Submit vote
+│   ├── POST /{id}/reveal          # Reveal votes (Scrum Master)
+│   └── GET /{id}/round            # Get current round status
 ├── users/
-│   ├── POST /{session_id}/kick/{user_id}  # Kick user
-│   └── POST /{session_id}/transfer        # Transfer Scrum Master
+│   ├── POST /{session_id}/kick/{user_id}    # Kick user (Scrum Master)
+│   ├── POST /{session_id}/transfer          # Transfer Scrum Master role
+│   └── POST /{session_id}/reconnect         # Reconnect after disconnection
 └── sse/
-    └── GET /{session_id}  # EventSource endpoint
+    └── GET /{session_id}          # EventSource streaming endpoint
 ```
 
 ## Real-time Communication Flow
