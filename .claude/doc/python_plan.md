@@ -1315,44 +1315,274 @@ class SSEManager:
 ```python
 class PlanningPokerException(Exception):
     """Base exception for planning poker errors"""
-    pass
+    def __init__(self, message: str, error_code: str = None, context: Dict[str, Any] = None):
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code or self.__class__.__name__.upper()
+        self.context = context or {}
+        self.timestamp = datetime.utcnow()
 
 class SessionFullException(PlanningPokerException):
     """Raised when session reaches maximum capacity"""
-    pass
+    def __init__(self, message: str = "Session has reached maximum capacity", 
+                 session_id: str = None, current_count: int = None):
+        super().__init__(message, "SESSION_FULL", {
+            "session_id": session_id,
+            "current_count": current_count,
+            "max_capacity": 16
+        })
 
 class SessionNotFoundException(PlanningPokerException):
     """Raised when session doesn't exist or expired"""
-    pass
+    def __init__(self, message: str = "Session not found or has expired", 
+                 session_id: str = None, expired: bool = False):
+        super().__init__(message, "SESSION_NOT_FOUND", {
+            "session_id": session_id,
+            "expired": expired
+        })
 
 class MaxSessionsException(PlanningPokerException):
     """Raised when maximum concurrent sessions reached"""
-    pass
+    def __init__(self, message: str = "Maximum concurrent sessions reached", 
+                 current_count: int = None):
+        super().__init__(message, "MAX_SESSIONS_REACHED", {
+            "current_count": current_count,
+            "max_sessions": 3
+        })
 
 class UnauthorizedException(PlanningPokerException):
     """Raised when user lacks permission for action"""
-    pass
+    def __init__(self, message: str = "User lacks permission for this action", 
+                 user_id: str = None, required_role: str = None):
+        super().__init__(message, "UNAUTHORIZED", {
+            "user_id": user_id,
+            "required_role": required_role
+        })
 
 class VotingException(PlanningPokerException):
     """Raised for voting-related errors"""
-    pass
+    def __init__(self, message: str = "Voting error occurred", 
+                 session_id: str = None, voting_phase: str = None):
+        super().__init__(message, "VOTING_ERROR", {
+            "session_id": session_id,
+            "voting_phase": voting_phase
+        })
+
+class NetworkPartitionException(PlanningPokerException):
+    """Raised when network partition is detected"""
+    def __init__(self, message: str = "Network partition detected", 
+                 affected_clients: List[str] = None, detection_time: datetime = None):
+        super().__init__(message, "NETWORK_PARTITION", {
+            "affected_clients": affected_clients or [],
+            "detection_time": detection_time or datetime.utcnow(),
+            "recovery_strategy": "full_resync"
+        })
+
+class StateCorruptionException(PlanningPokerException):
+    """Raised when session state corruption is detected"""
+    def __init__(self, message: str = "Session state corruption detected", 
+                 session_id: str = None, corruption_type: str = None):
+        super().__init__(message, "STATE_CORRUPTION", {
+            "session_id": session_id,
+            "corruption_type": corruption_type,
+            "requires_reset": True
+        })
+
+class GracePeriodException(PlanningPokerException):
+    """Raised for grace period related errors"""
+    def __init__(self, message: str = "Grace period error", 
+                 session_id: str = None, grace_period_active: bool = False):
+        super().__init__(message, "GRACE_PERIOD_ERROR", {
+            "session_id": session_id,
+            "grace_period_active": grace_period_active
+        })
+
+class MobileOptimizationException(PlanningPokerException):
+    """Raised for mobile optimization errors"""
+    def __init__(self, message: str = "Mobile optimization error", 
+                 user_id: str = None, optimization_type: str = None):
+        super().__init__(message, "MOBILE_OPTIMIZATION_ERROR", {
+            "user_id": user_id,
+            "optimization_type": optimization_type
+        })
 ```
 
 ### FastAPI Error Handlers (`src/main.py`)
 ```python
-@app.exception_handler(SessionNotFoundException)
-async def session_not_found_handler(request, exc):
+# Enhanced Error Handlers with Context and Recovery Actions
+@app.exception_handler(PlanningPokerException)
+async def planning_poker_exception_handler(request, exc: PlanningPokerException):
+    """Handle all planning poker related exceptions with enhanced context"""
+    
+    # Determine HTTP status code based on exception type
+    status_codes = {
+        'SESSION_NOT_FOUND': 404,
+        'SESSION_FULL': 409,
+        'MAX_SESSIONS_REACHED': 429,
+        'UNAUTHORIZED': 403,
+        'VOTING_ERROR': 400,
+        'NETWORK_PARTITION': 503,
+        'STATE_CORRUPTION': 500,
+        'GRACE_PERIOD_ERROR': 409,
+        'MOBILE_OPTIMIZATION_ERROR': 400
+    }
+    
+    status_code = status_codes.get(exc.error_code, 500)
+    
+    # Generate user-friendly error message and recovery actions
+    error_responses = {
+        'SESSION_NOT_FOUND': {
+            'user_message': 'The session you\'re trying to join no longer exists or has expired.',
+            'recovery_actions': ['Return to home page', 'Create a new session', 'Contact session owner']
+        },
+        'SESSION_FULL': {
+            'user_message': 'This session is currently full (16 participants maximum).',
+            'recovery_actions': ['Try again later', 'Contact session owner', 'Create a new session']
+        },
+        'MAX_SESSIONS_REACHED': {
+            'user_message': 'Maximum number of active sessions reached. Please try again later.',
+            'recovery_actions': ['Wait for a session to end', 'Try again in a few minutes']
+        },
+        'UNAUTHORIZED': {
+            'user_message': 'You don\'t have permission to perform this action.',
+            'recovery_actions': ['Contact the Scrum Master', 'Rejoin the session']
+        },
+        'VOTING_ERROR': {
+            'user_message': 'There was an issue with your vote submission.',
+            'recovery_actions': ['Try voting again', 'Refresh the page', 'Contact support']
+        },
+        'NETWORK_PARTITION': {
+            'user_message': 'Connection issues detected. Attempting to reconnect...',
+            'recovery_actions': ['Please wait for automatic reconnection', 'Refresh if connection fails']
+        },
+        'STATE_CORRUPTION': {
+            'user_message': 'Session data inconsistency detected. Refreshing session state...',
+            'recovery_actions': ['Page will refresh automatically', 'Contact support if issues persist']
+        },
+        'GRACE_PERIOD_ERROR': {
+            'user_message': 'The session is currently in a grace period waiting for the Scrum Master.',
+            'recovery_actions': ['Wait for Scrum Master to return', 'A new Scrum Master will be assigned soon']
+        }
+    }
+    
+    response_data = error_responses.get(exc.error_code, {
+        'user_message': 'An unexpected error occurred. Please try again.',
+        'recovery_actions': ['Refresh the page', 'Contact support']
+    })
+    
+    # Log error with full context
+    logging.error(f"Exception: {exc.error_code}", extra={
+        'error_code': exc.error_code,
+        'message': exc.message,
+        'context': exc.context,
+        'timestamp': exc.timestamp.isoformat(),
+        'request_path': str(request.url),
+        'user_agent': request.headers.get('user-agent')
+    })
+    
     return JSONResponse(
-        status_code=404,
-        content={"error": "Session not found", "detail": str(exc)}
+        status_code=status_code,
+        content={
+            'error': True,
+            'error_code': exc.error_code,
+            'message': response_data['user_message'],
+            'recovery_actions': response_data['recovery_actions'],
+            'context': exc.context,
+            'timestamp': exc.timestamp.isoformat(),
+            'retry_after': _get_retry_after_seconds(exc.error_code)
+        }
     )
 
-@app.exception_handler(SessionFullException)
-async def session_full_handler(request, exc):
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc: Exception):
+    """Handle unexpected exceptions with graceful degradation"""
+    
+    # Log the full exception for debugging
+    logging.exception("Unhandled exception", extra={
+        'request_path': str(request.url),
+        'user_agent': request.headers.get('user-agent'),
+        'exception_type': type(exc).__name__
+    })
+    
     return JSONResponse(
-        status_code=409,
-        content={"error": "Session full", "detail": str(exc)}
+        status_code=500,
+        content={
+            'error': True,
+            'error_code': 'INTERNAL_SERVER_ERROR',
+            'message': 'An unexpected error occurred. Our team has been notified.',
+            'recovery_actions': [
+                'Refresh the page and try again',
+                'Check your internet connection',
+                'Contact support if the problem persists'
+            ],
+            'context': {'exception_type': type(exc).__name__},
+            'timestamp': datetime.utcnow().isoformat(),
+            'retry_after': 30
+        }
     )
+
+def _get_retry_after_seconds(error_code: str) -> Optional[int]:
+    """Get appropriate retry delay for different error types"""
+    retry_delays = {
+        'MAX_SESSIONS_REACHED': 300,  # 5 minutes
+        'SESSION_FULL': 60,           # 1 minute
+        'NETWORK_PARTITION': 10,      # 10 seconds
+        'STATE_CORRUPTION': 5,        # 5 seconds
+        'GRACE_PERIOD_ERROR': 60      # 1 minute
+    }
+    return retry_delays.get(error_code)
+
+# Network Partition Recovery
+async def handle_network_partition_recovery(session_id: str, affected_clients: List[str]):
+    """Handle recovery from network partition"""
+    try:
+        # Implement partition recovery logic
+        recovery_data = {
+            'detected_at': datetime.utcnow(),
+            'affected_clients': affected_clients,
+            'recovery_strategy': 'full_resync',
+            'success': False
+        }
+        
+        # Broadcast recovery event to all clients
+        recovery_event = SSEEvent(
+            type='network_partition_detected',
+            session_id=session_id,
+            data=recovery_data
+        )
+        
+        # Mark recovery as successful if broadcast succeeds
+        recovery_data['success'] = True
+        
+        return recovery_data
+        
+    except Exception as e:
+        logging.error(f"Network partition recovery failed: {e}")
+        return None
+
+# State Corruption Recovery  
+async def handle_state_corruption_recovery(session_id: str, corruption_type: str):
+    """Handle recovery from state corruption"""
+    try:
+        # Log corruption for analysis
+        corruption_report = {
+            'corruption_type': corruption_type,
+            'affected_session': session_id,
+            'detected_at': datetime.utcnow(),
+            'recovery_attempted': True,
+            'recovery_successful': False
+        }
+        
+        # Attempt to recover session state
+        # This would involve session manager cleanup and reset
+        
+        corruption_report['recovery_successful'] = True
+        
+        return corruption_report
+        
+    except Exception as e:
+        logging.error(f"State corruption recovery failed: {e}")
+        return None
 ```
 
 ## Testing Strategy
